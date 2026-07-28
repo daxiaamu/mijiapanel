@@ -1,0 +1,61 @@
+apply plugin: 'com.android.application'
+
+def releaseKeystorePropertiesFile = rootProject.file('.signing/keystore.properties')
+def releaseKeystoreProperties = new Properties()
+if (releaseKeystorePropertiesFile.exists()) {
+    releaseKeystorePropertiesFile.withInputStream {
+        releaseKeystoreProperties.load(it)
+    }
+}
+
+android {
+    namespace 'com.daxiaamu.mijiapanel'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.daxiaamu.mijiapanel'
+        minSdk 26
+        targetSdk 35
+        versionCode 3
+        versionName '1.0.2'
+    }
+
+    signingConfigs {
+        debug {
+            enableV1Signing false
+            enableV2Signing true
+            enableV3Signing true
+            enableV4Signing true
+        }
+        release {
+            if (releaseKeystorePropertiesFile.exists()) {
+                storeFile new File(
+                        releaseKeystorePropertiesFile.parentFile,
+                        releaseKeystoreProperties['storeFile'])
+                storePassword releaseKeystoreProperties['storePassword']
+                keyAlias releaseKeystoreProperties['keyAlias']
+                keyPassword releaseKeystoreProperties['keyPassword']
+            }
+            enableV1Signing false
+            enableV2Signing true
+            enableV3Signing true
+            enableV4Signing true
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    compileOnly 'io.github.libxposed:api:102.0.0'
+}

@@ -1,0 +1,15 @@
+.gradle/
+.idea/
+**/build/
+local.properties
+.tools/
+.analysis/
+.signing/
+*.jks
+*.keystore
+*.der
+*.pem
+*.apk
+*.idsig
+*signing-backup*.zip
+*signing-backup*.aes256

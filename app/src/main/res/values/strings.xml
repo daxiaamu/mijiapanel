@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">米家中控模式</string>
+    <string name="module_description">使米家APP在手机上也可以显示中控入口和开启中控模式</string>
+</resources>
