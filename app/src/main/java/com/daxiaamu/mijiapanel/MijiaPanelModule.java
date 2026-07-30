@@ -3,6 +3,8 @@ package com.daxiaamu.mijiapanel;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
@@ -13,19 +15,30 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.widget.TextView;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface;
+import org.luckypray.dexkit.DexKitBridge;
+import org.luckypray.dexkit.query.FindMethod;
+import org.luckypray.dexkit.query.matchers.MethodMatcher;
+import org.luckypray.dexkit.result.MethodData;
+import org.luckypray.dexkit.result.MethodDataList;
+import org.luckypray.dexkit.wrap.DexMethod;
 
 /**
  * Modern Xposed API 102 entry point.
  *
- * The target APK (Xiaomi Home 11.5.705) already contains a complete pad UI. This
- * module enables that UI instead of replacing or patching any Xiaomi resources.
+ * Xiaomi Home already contains a complete pad UI. This module exposes and
+ * enables that native UI instead of replacing or patching Xiaomi resources.
  */
 public final class MijiaPanelModule extends XposedModule {
     private static final String TAG = "MijiaPanel";
@@ -37,10 +50,16 @@ public final class MijiaPanelModule extends XposedModule {
             "com.xiaomi.smarthome.miio.page.SettingMainPageV2";
     private static final String PAD_PREFS = "pad_mode";
     private static final String PAD_ENABLED = "pad_mode_enable";
+    private static final String COMPAT_PREFS = "compatibility";
+    private static final String CACHE_VERSION_CODE = "dexkit_version_code";
+    private static final String CACHE_UPDATE_TIME = "dexkit_update_time";
+    private static final String CACHE_PAD_METHOD = "dexkit_pad_method";
     private static final int TARGET_SHORTEST_DP = 600;
     private static final int MIN_DENSITY_DPI = 240;
 
     private volatile Context targetContext;
+    private volatile CompatibilityProfile compatibilityProfile = CompatibilityProfile.UNKNOWN;
+    private final AtomicBoolean compatibilityHooksInstalled = new AtomicBoolean();
 
     @Override
     public void onModuleLoaded(XposedModuleInterface.ModuleLoadedParam param) {
@@ -56,7 +75,6 @@ public final class MijiaPanelModule extends XposedModule {
         ClassLoader loader = param.getClassLoader();
         captureApplicationContext(loader);
         hookActivityContexts(loader);
-        hookTabletChecks(loader);
         hookCentralControlEntry(loader);
         hookPadStatusBar(loader);
     }
@@ -73,9 +91,9 @@ public final class MijiaPanelModule extends XposedModule {
                     .intercept(chain -> {
                         Context base = (Context) chain.getArg(0);
                         targetContext = base;
+                        ensureCompatibilityHooks(loader, base);
                         // Never replace the Application context. A process-wide
-                        // tablet override breaks Xiaomi Home's normal page after
-                        // the user exits central-control mode.
+                        // tablet override breaks the normal page after pad-mode exit.
                         return chain.proceed();
                     });
         } catch (Throwable error) {
@@ -106,34 +124,159 @@ public final class MijiaPanelModule extends XposedModule {
         }
     }
 
-    private void hookTabletChecks(ClassLoader loader) {
-        hookBooleanTrue(loader, "_m_j.jy7", "Oooo0O0", "mijia-panel.is-pad-core");
+    private void ensureCompatibilityHooks(ClassLoader loader, Context context) {
+        if (compatibilityHooksInstalled.get()) {
+            return;
+        }
+
+        long versionCode = getTargetVersionCode(context);
+        CompatibilityProfile profile = CompatibilityProfile.forVersion(versionCode);
+        if (!compatibilityHooksInstalled.compareAndSet(false, true)) {
+            return;
+        }
+
+        compatibilityProfile = profile;
+        if (!profile.known) {
+            log(Log.WARN, TAG, "Unknown Xiaomi Home versionCode " + versionCode
+                    + "; searching for the tablet check by DEX structure");
+            hookDiscoveredTabletCheck(loader, context, versionCode);
+            return;
+        }
+
+        log(Log.INFO, TAG, "Using Xiaomi Home " + profile.versionName
+                + " compatibility profile");
+        boolean coreHooked = hookBooleanTrue(
+                loader,
+                profile.coreClass,
+                profile.coreMethod,
+                "mijia-panel.is-pad-core");
         hookBooleanTrue(
                 loader,
-                "com.xiaomi.smarthome.utils.OooO00o",
-                "OooOOO0",
+                profile.utilityClass,
+                profile.utilityMethod,
                 "mijia-panel.is-pad-activity");
+        if (!coreHooked) {
+            hookDiscoveredTabletCheck(loader, context, versionCode);
+        }
     }
 
-    private void hookBooleanTrue(
+    private boolean hookBooleanTrue(
             ClassLoader loader, String className, String methodName, String hookId) {
         try {
             Class<?> type = Class.forName(className, false, loader);
             Method method = type.getDeclaredMethod(methodName);
-            if (!Modifier.isStatic(method.getModifiers())
-                    || method.getReturnType() != boolean.class) {
-                throw new NoSuchMethodException(className + "#" + methodName
-                        + " is not static boolean()");
-            }
-            method.setAccessible(true);
-            hook(method)
-                    .setId(hookId)
-                    .setPriority(XposedInterface.PRIORITY_HIGHEST)
-                    .intercept(chain -> isPadModeEnabled(targetContext)
-                            ? true
-                            : chain.proceed());
+            hookBooleanTrue(method, hookId);
+            return true;
         } catch (Throwable error) {
             logFailure("Unable to hook " + className + "#" + methodName, error);
+            return false;
+        }
+    }
+
+    private void hookBooleanTrue(Method method, String hookId) throws NoSuchMethodException {
+        if (!Modifier.isStatic(method.getModifiers())
+                || method.getReturnType() != boolean.class
+                || method.getParameterTypes().length != 0) {
+            throw new NoSuchMethodException(method + " is not static boolean()");
+        }
+        method.setAccessible(true);
+        hook(method)
+                .setId(hookId)
+                .setPriority(XposedInterface.PRIORITY_HIGHEST)
+                .intercept(chain -> isPadModeEnabled(targetContext)
+                        ? true
+                        : chain.proceed());
+    }
+
+    private void hookDiscoveredTabletCheck(
+            ClassLoader loader, Context context, long versionCode) {
+        try {
+            long updateTime = getTargetUpdateTime(context);
+            Method cached = readCachedPadMethod(loader, versionCode, updateTime);
+            if (cached != null) {
+                hookBooleanTrue(cached, "mijia-panel.is-pad-dexkit");
+                log(Log.INFO, TAG, "Using cached tablet check " + cached);
+                return;
+            }
+
+            System.loadLibrary("dexkit");
+            String sourceDir = context.getApplicationInfo().sourceDir;
+            try (DexKitBridge bridge = DexKitBridge.create(sourceDir)) {
+                MethodMatcher matcher = MethodMatcher.create()
+                        .modifiers(Modifier.STATIC)
+                        .returnType("boolean")
+                        .paramCount(0)
+                        .usingEqStrings("developer_setting", "force_not_pad")
+                        .usingNumbers(530.0f, 1.8f);
+                MethodDataList matches = bridge.findMethod(
+                        FindMethod.create()
+                                .searchPackages("_m_j")
+                                .matcher(matcher));
+                if (matches.isEmpty()) {
+                    // Keep the semantic strings and signature as the required
+                    // identity, but tolerate future package or threshold changes.
+                    matches = bridge.findMethod(
+                            FindMethod.create()
+                                    .matcher(MethodMatcher.create()
+                                            .modifiers(Modifier.STATIC)
+                                            .returnType("boolean")
+                                            .paramCount(0)
+                                            .usingEqStrings(
+                                                    "developer_setting",
+                                                    "force_not_pad")));
+                }
+                if (matches.size() != 1) {
+                    log(Log.WARN, TAG, "DEX tablet-check search returned "
+                            + matches.size() + " candidates; refusing an ambiguous hook");
+                    return;
+                }
+
+                MethodData match = matches.get(0);
+                Method method = match.getMethodInstance(loader);
+                hookBooleanTrue(method, "mijia-panel.is-pad-dexkit");
+                cachePadMethod(match.getDescriptor(), versionCode, updateTime);
+                log(Log.INFO, TAG, "Discovered tablet check " + match.getDescriptor());
+            }
+        } catch (Throwable error) {
+            logFailure("Unable to discover the tablet check", error);
+        }
+    }
+
+    private Method readCachedPadMethod(
+            ClassLoader loader, long versionCode, long updateTime) {
+        try {
+            SharedPreferences preferences = getRemotePreferences(COMPAT_PREFS);
+            if (preferences.getLong(CACHE_VERSION_CODE, -1) != versionCode
+                    || preferences.getLong(CACHE_UPDATE_TIME, -1) != updateTime) {
+                return null;
+            }
+            String descriptor = preferences.getString(CACHE_PAD_METHOD, null);
+            if (descriptor == null || descriptor.isEmpty()) {
+                return null;
+            }
+            Method method = new DexMethod(descriptor).getMethodInstance(loader);
+            if (!Modifier.isStatic(method.getModifiers())
+                    || method.getReturnType() != boolean.class
+                    || method.getParameterTypes().length != 0) {
+                return null;
+            }
+            return method;
+        } catch (Throwable error) {
+            logFailure("Unable to read the DEX compatibility cache", error);
+            return null;
+        }
+    }
+
+    private void cachePadMethod(String descriptor, long versionCode, long updateTime) {
+        try {
+            getRemotePreferences(COMPAT_PREFS)
+                    .edit()
+                    .putLong(CACHE_VERSION_CODE, versionCode)
+                    .putLong(CACHE_UPDATE_TIME, updateTime)
+                    .putString(CACHE_PAD_METHOD, descriptor)
+                    .apply();
+        } catch (Throwable error) {
+            logFailure("Unable to save the DEX compatibility cache", error);
         }
     }
 
@@ -148,9 +291,7 @@ public final class MijiaPanelModule extends XposedModule {
                     .setPriority(XposedInterface.PRIORITY_LOWEST)
                     .intercept(chain -> {
                         Object result = chain.proceed();
-                        ensureCentralControlItem(
-                                (View) chain.getArg(0),
-                                loader);
+                        ensureCentralControlItem((View) chain.getArg(0), loader);
                         return result;
                     });
         } catch (Throwable error) {
@@ -164,33 +305,28 @@ public final class MijiaPanelModule extends XposedModule {
         }
         try {
             Context context = root.getContext();
-            int entryId = context.getResources().getIdentifier(
-                    "dcf", "id", TARGET_PACKAGE);
-            View entry = entryId != 0 ? root.findViewById(entryId) : null;
+            Class<?> itemClass = Class.forName(
+                    "com.xiaomi.smarthome.miio.page.ItemOptionView",
+                    false,
+                    loader);
+            CompatibilityProfile profile = compatibilityProfile;
+            View entry = null;
+
+            if (profile.known) {
+                int entryId = context.getResources().getIdentifier(
+                        profile.entryId, "id", TARGET_PACKAGE);
+                View exactEntry = entryId != 0 ? root.findViewById(entryId) : null;
+                if (itemClass.isInstance(exactEntry)) {
+                    entry = exactEntry;
+                }
+            }
 
             if (entry == null) {
-                int containerId = context.getResources().getIdentifier(
-                        "doo", "id", TARGET_PACKAGE);
-                View containerView = containerId != 0
-                        ? root.findViewById(containerId)
-                        : null;
-                if (!(containerView instanceof ViewGroup)) {
-                    return;
-                }
-
-                Class<?> itemClass = Class.forName(
-                        "com.xiaomi.smarthome.miio.page.ItemOptionView",
-                        false,
-                        loader);
-                entry = (View) itemClass.getConstructor(Context.class).newInstance(context);
-                itemClass.getMethod("setTitle", CharSequence.class)
-                        .invoke(entry, "全屋中控");
-                itemClass.getMethod("setSubTitle", CharSequence.class)
-                        .invoke(entry, "手动进入中控模式");
-                if (entryId != 0) {
-                    entry.setId(entryId);
-                }
-                ((ViewGroup) containerView).addView(entry);
+                entry = findSemanticCentralControlEntry(root, itemClass);
+            }
+            if (entry == null) {
+                log(Log.WARN, TAG, "Central-control entry was not found safely");
+                return;
             }
 
             entry.setVisibility(View.VISIBLE);
@@ -200,8 +336,54 @@ public final class MijiaPanelModule extends XposedModule {
                 clickContext.startActivity(new Intent(clickContext, modeActivity));
             });
         } catch (Throwable error) {
-            logFailure("Unable to add central-control entry", error);
+            logFailure("Unable to expose central-control entry", error);
         }
+    }
+
+    private static View findSemanticCentralControlEntry(View root, Class<?> itemClass) {
+        List<View> matches = new ArrayList<>(2);
+        collectSemanticCentralControlEntries(root, itemClass, matches);
+        return matches.size() == 1 ? matches.get(0) : null;
+    }
+
+    private static void collectSemanticCentralControlEntries(
+            View view, Class<?> itemClass, List<View> matches) {
+        if (view == null || matches.size() > 1) {
+            return;
+        }
+        if (itemClass.isInstance(view) && containsCentralControlText(view)) {
+            matches.add(view);
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                collectSemanticCentralControlEntries(
+                        group.getChildAt(index), itemClass, matches);
+            }
+        }
+    }
+
+    private static boolean containsCentralControlText(View view) {
+        if (view instanceof TextView) {
+            CharSequence text = ((TextView) view).getText();
+            if (text != null) {
+                String normalized = text.toString().toLowerCase(Locale.ROOT);
+                if (normalized.contains("中控")
+                        || normalized.contains("control panel")
+                        || normalized.contains("central control")) {
+                    return true;
+                }
+            }
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                if (containsCentralControlText(group.getChildAt(index))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void hookPadStatusBar(ClassLoader loader) {
@@ -270,7 +452,7 @@ public final class MijiaPanelModule extends XposedModule {
     /**
      * A phone must expose more dp, not a larger numeric density value, to select
      * tablet resources. For a 1080 px short edge this computes 288 dpi, yielding
-     * 600 dp. The change is isolated to Xiaomi Home's contexts.
+     * 600 dp. The change is isolated to Xiaomi Home's activity contexts.
      */
     private static Context makeTabletContext(Context base) {
         if (base == null) {
@@ -318,7 +500,98 @@ public final class MijiaPanelModule extends XposedModule {
         }
     }
 
+    private static long getTargetVersionCode(Context context) {
+        if (context == null) {
+            return -1;
+        }
+        try {
+            PackageInfo info = context.getPackageManager().getPackageInfo(TARGET_PACKAGE, 0);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                return info.getLongVersionCode();
+            }
+            return info.versionCode;
+        } catch (Throwable ignored) {
+            return -1;
+        }
+    }
+
+    private static long getTargetUpdateTime(Context context) {
+        if (context == null) {
+            return -1;
+        }
+        try {
+            return context.getPackageManager()
+                    .getPackageInfo(TARGET_PACKAGE, 0)
+                    .lastUpdateTime;
+        } catch (Throwable ignored) {
+            return -1;
+        }
+    }
+
     private void logFailure(String message, Throwable error) {
         log(Log.ERROR, TAG, message, error);
+    }
+
+    private static final class CompatibilityProfile {
+        private static final String UTILITY_CLASS =
+                "com.xiaomi.smarthome.utils.OooO00o";
+        private static final CompatibilityProfile UNKNOWN =
+                new CompatibilityProfile(-1, "unknown", null, null, null, null, false);
+        private static final CompatibilityProfile[] KNOWN = {
+                new CompatibilityProfile(
+                        11051705L, "11.5.705", "dcf",
+                        "_m_j.jy7", "Oooo0O0", "OooOOO0", true),
+                new CompatibilityProfile(
+                        110615011L, "11.6.501", "de_",
+                        "_m_j.g14", "OooOOO", "OooOOo", true),
+                new CompatibilityProfile(
+                        110616251L, "11.6.625", "dec",
+                        "_m_j.g09", "OooOooo", "OooOOO0", true),
+                new CompatibilityProfile(
+                        110617011L, "11.6.701", "dec",
+                        "_m_j.xz8", "OooOooo", "OooOOO0", true),
+                new CompatibilityProfile(
+                        110617031L, "11.6.703", "rl_pad_mode",
+                        "_m_j.n84", "OooOOoo", "OooOoOO", true),
+                new CompatibilityProfile(
+                        110617051L, "11.6.705", "dec",
+                        "_m_j.yz8", "OooOooo", "OooOOO0", true)
+        };
+
+        private final long versionCode;
+        private final String versionName;
+        private final String entryId;
+        private final String coreClass;
+        private final String coreMethod;
+        private final String utilityClass;
+        private final String utilityMethod;
+        private final boolean known;
+
+        private CompatibilityProfile(
+                long versionCode,
+                String versionName,
+                String entryId,
+                String coreClass,
+                String coreMethod,
+                String utilityMethod,
+                boolean known) {
+            this.versionCode = versionCode;
+            this.versionName = versionName;
+            this.entryId = entryId;
+            this.coreClass = coreClass;
+            this.coreMethod = coreMethod;
+            this.utilityClass = UTILITY_CLASS;
+            this.utilityMethod = utilityMethod;
+            this.known = known;
+        }
+
+        private static CompatibilityProfile forVersion(long versionCode) {
+            for (CompatibilityProfile profile : KNOWN) {
+                if (profile.versionCode == versionCode) {
+                    return profile;
+                }
+            }
+            return UNKNOWN;
+        }
     }
 }
