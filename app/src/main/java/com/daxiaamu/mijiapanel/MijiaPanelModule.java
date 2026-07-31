@@ -8,6 +8,7 @@ import android.content.pm.PackageInfo;
 import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
+import android.graphics.Color;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.View;
@@ -54,6 +55,7 @@ public final class MijiaPanelModule extends XposedModule {
     private static final String CACHE_VERSION_CODE = "dexkit_version_code";
     private static final String CACHE_UPDATE_TIME = "dexkit_update_time";
     private static final String CACHE_PAD_METHOD = "dexkit_pad_method";
+    private static final String PAD_PACKAGE_PREFIX = "com.xiaomi.smarthome.pad.";
     private static final int TARGET_SHORTEST_DP = 600;
     private static final int MIN_DENSITY_DPI = 240;
 
@@ -74,9 +76,9 @@ public final class MijiaPanelModule extends XposedModule {
 
         ClassLoader loader = param.getClassLoader();
         captureApplicationContext(loader);
-        hookActivityContexts(loader);
+        hookPadActivityContexts(loader);
         hookCentralControlEntry(loader);
-        hookPadStatusBar(loader);
+        hookPadSystemBars(loader);
     }
 
     private void captureApplicationContext(ClassLoader loader) {
@@ -101,26 +103,27 @@ public final class MijiaPanelModule extends XposedModule {
         }
     }
 
-    private void hookActivityContexts(ClassLoader loader) {
+    private void hookPadActivityContexts(ClassLoader loader) {
         try {
             Class<?> commonActivity = Class.forName(
                     "com.xiaomi.smarthome.framework.page.CommonActivity", false, loader);
             Method attach = commonActivity.getDeclaredMethod("attachBaseContext", Context.class);
             attach.setAccessible(true);
             hook(attach)
-                    .setId("mijia-panel.activity-context")
+                    .setId("mijia-panel.pad-activity-context")
                     .setPriority(XposedInterface.PRIORITY_HIGHEST)
                     .intercept(chain -> {
                         Context base = (Context) chain.getArg(0);
-                        Context applicationContext = base.getApplicationContext();
-                        targetContext = applicationContext != null ? applicationContext : base;
-                        Context effectiveContext = isPadModeEnabled(base)
+                        Object activity = chain.getThisObject();
+                        boolean isPadActivity = activity != null
+                                && activity.getClass().getName().startsWith(PAD_PACKAGE_PREFIX);
+                        Context effectiveContext = isPadActivity && isPadModeEnabled(base)
                                 ? makeTabletContext(base)
                                 : base;
                         return chain.proceed(new Object[]{effectiveContext});
                     });
         } catch (Throwable error) {
-            logFailure("Unable to hook CommonActivity.attachBaseContext", error);
+            logFailure("Unable to hook pad activity contexts", error);
         }
     }
 
@@ -386,45 +389,67 @@ public final class MijiaPanelModule extends XposedModule {
         return false;
     }
 
-    private void hookPadStatusBar(ClassLoader loader) {
+    private void hookPadSystemBars(ClassLoader loader) {
         try {
             Class<?> padActivity = Class.forName(PAD_MAIN, false, loader);
             Method onCreate = padActivity.getDeclaredMethod("onCreate", Bundle.class);
             onCreate.setAccessible(true);
             hook(onCreate)
-                    .setId("mijia-panel.pad-status-bar-on-create")
+                    .setId("mijia-panel.pad-system-bars-on-create")
                     .setPriority(XposedInterface.PRIORITY_LOWEST)
                     .intercept(chain -> {
                         Object result = chain.proceed();
-                        hideStatusBar((Activity) chain.getThisObject());
+                        hideSystemBars((Activity) chain.getThisObject());
                         return result;
                     });
 
             Method onResume = padActivity.getDeclaredMethod("onResume");
             onResume.setAccessible(true);
             hook(onResume)
-                    .setId("mijia-panel.pad-status-bar-on-resume")
+                    .setId("mijia-panel.pad-system-bars-on-resume")
                     .setPriority(XposedInterface.PRIORITY_LOWEST)
                     .intercept(chain -> {
                         Object result = chain.proceed();
-                        hideStatusBar((Activity) chain.getThisObject());
+                        hideSystemBars((Activity) chain.getThisObject());
+                        return result;
+                    });
+
+            Method onWindowFocusChanged =
+                    Activity.class.getDeclaredMethod("onWindowFocusChanged", boolean.class);
+            onWindowFocusChanged.setAccessible(true);
+            hook(onWindowFocusChanged)
+                    .setId("mijia-panel.pad-system-bars-on-focus")
+                    .setPriority(XposedInterface.PRIORITY_LOWEST)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        Activity activity = (Activity) chain.getThisObject();
+                        if ((boolean) chain.getArg(0) && padActivity.isInstance(activity)) {
+                            hideSystemBars(activity);
+                        }
                         return result;
                     });
         } catch (Throwable error) {
-            logFailure("Unable to install pad status-bar hooks", error);
+            logFailure("Unable to install pad system-bar hooks", error);
         }
     }
 
-    private static void hideStatusBar(Activity activity) {
+    private static void hideSystemBars(Activity activity) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
             return;
         }
         Window window = activity.getWindow();
         window.addFlags(WindowManagerFlags.FLAG_FULLSCREEN);
+        window.setStatusBarColor(Color.TRANSPARENT);
+        window.setNavigationBarColor(Color.TRANSPARENT);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.setStatusBarContrastEnforced(false);
+            window.setNavigationBarContrastEnforced(false);
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false);
             WindowInsetsController controller = window.getInsetsController();
             if (controller != null) {
-                controller.hide(WindowInsets.Type.statusBars());
+                controller.hide(WindowInsets.Type.systemBars());
                 controller.setSystemBarsBehavior(
                         WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
             }
@@ -432,7 +457,9 @@ public final class MijiaPanelModule extends XposedModule {
             View decor = window.getDecorView();
             decor.setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                             | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                             | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
         }
@@ -450,9 +477,8 @@ public final class MijiaPanelModule extends XposedModule {
     }
 
     /**
-     * A phone must expose more dp, not a larger numeric density value, to select
-     * tablet resources. For a 1080 px short edge this computes 288 dpi, yielding
-     * 600 dp. The change is isolated to Xiaomi Home's activity contexts.
+     * Exposes roughly 600 dp on the short edge so Xiaomi Home selects its pad
+     * resources. This context is applied only to com.xiaomi.smarthome.pad.*.
      */
     private static Context makeTabletContext(Context base) {
         if (base == null) {
