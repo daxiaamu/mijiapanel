@@ -11,8 +11,10 @@
     <string name="brightness_percent">%1$d%%</string>
     <string name="burn_in_protection">防烧屏位移</string>
     <string name="burn_in_protection_summary">每隔3分钟轻微随机移动中控界面，能一定程度缓解烧屏</string>
+    <string name="keep_screen_on">保持屏幕常亮</string>
+    <string name="keep_screen_on_summary">开启后，中控模式下始终保持屏幕亮起；与人在检测不能同时开启</string>
     <string name="presence_detection">有人时保持并自动点亮屏幕</string>
-    <string name="presence_detection_summary">使用前置摄像头检测动作和人脸；有人时保持亮屏，人来时自动点亮。图像仅在本机内存中处理。仅在米家中控模式下生效，不影响正常使用</string>
+    <string name="presence_detection_summary">使用前置摄像头检测动作和人脸；有人时保持亮屏，人来时自动点亮。开启后会自动关闭“保持屏幕常亮”。图像仅在本机内存中处理。仅在米家中控模式下生效，不影响正常使用</string>
     <string name="presence_camera_permission_required">需要前置摄像头权限才能检测是否有人</string>
     <string name="presence_notification_channel">人在检测</string>
     <string name="presence_notification_title">正在检测中控前是否有人</string>

@@ -87,6 +87,9 @@ class SettingsActivity : ComponentActivity() {
     private var burnInProtectionEnabled by mutableStateOf(
         BrightnessSettings.DEFAULT_BURN_IN_PROTECTION,
     )
+    private var keepScreenOnEnabled by mutableStateOf(
+        BrightnessSettings.DEFAULT_KEEP_SCREEN_ON,
+    )
     private var presenceDetectionEnabled by mutableStateOf(
         BrightnessSettings.DEFAULT_PRESENCE_DETECTION,
     )
@@ -286,6 +289,15 @@ class SettingsActivity : ComponentActivity() {
                 }
                 item {
                     SwitchSetting(
+                        title = getString(R.string.keep_screen_on),
+                        summary = getString(R.string.keep_screen_on_summary),
+                        checked = keepScreenOnEnabled,
+                        enabled = remotePreferencesReady,
+                        onCheckedChange = { updateKeepScreenOn(it) },
+                    )
+                }
+                item {
+                    SwitchSetting(
                         title = getString(R.string.presence_detection),
                         summary = getString(R.string.presence_detection_summary),
                         checked = presenceDetectionEnabled,
@@ -479,10 +491,38 @@ class SettingsActivity : ComponentActivity() {
         persistPresenceDetection(enabled)
     }
 
+    private fun updateKeepScreenOn(enabled: Boolean) {
+        keepScreenOnEnabled = enabled
+        if (enabled && presenceDetectionEnabled) {
+            presenceDetectionEnabled = false
+            getSharedPreferences(BrightnessSettings.PREFERENCES, MODE_PRIVATE)
+                .edit()
+                .putBoolean(BrightnessSettings.PRESENCE_DETECTION, false)
+                .apply()
+            stopService(Intent(this, PresenceDetectionService::class.java))
+        }
+        preferences?.edit()
+            ?.putBoolean(BrightnessSettings.KEEP_SCREEN_ON, enabled)
+            ?.apply {
+                if (enabled) {
+                    putBoolean(BrightnessSettings.PRESENCE_DETECTION, false)
+                }
+            }
+            ?.commit()
+    }
+
     private fun persistPresenceDetection(enabled: Boolean) {
         presenceDetectionEnabled = enabled
+        if (enabled) {
+            keepScreenOnEnabled = false
+        }
         preferences?.edit()
             ?.putBoolean(BrightnessSettings.PRESENCE_DETECTION, enabled)
+            ?.apply {
+                if (enabled) {
+                    putBoolean(BrightnessSettings.KEEP_SCREEN_ON, false)
+                }
+            }
             ?.commit()
         getSharedPreferences(BrightnessSettings.PREFERENCES, MODE_PRIVATE)
             .edit()
@@ -523,10 +563,20 @@ class SettingsActivity : ComponentActivity() {
             BrightnessSettings.BURN_IN_PROTECTION,
             BrightnessSettings.DEFAULT_BURN_IN_PROTECTION,
         )
+        keepScreenOnEnabled = remote.getBoolean(
+            BrightnessSettings.KEEP_SCREEN_ON,
+            BrightnessSettings.DEFAULT_KEEP_SCREEN_ON,
+        )
         presenceDetectionEnabled = remote.getBoolean(
             BrightnessSettings.PRESENCE_DETECTION,
             BrightnessSettings.DEFAULT_PRESENCE_DETECTION,
         )
+        if (presenceDetectionEnabled && keepScreenOnEnabled) {
+            keepScreenOnEnabled = false
+            remote.edit()
+                .putBoolean(BrightnessSettings.KEEP_SCREEN_ON, false)
+                .commit()
+        }
         getSharedPreferences(BrightnessSettings.PREFERENCES, MODE_PRIVATE)
             .edit()
             .putBoolean(BrightnessSettings.PRESENCE_DETECTION, presenceDetectionEnabled)

@@ -76,6 +76,7 @@ public final class MijiaPanelModule extends XposedModule {
                         || BrightnessSettings.BRIGHTNESS_PERCENT.equals(key);
                 boolean burnInChanged = BrightnessSettings.BURN_IN_PROTECTION.equals(key);
                 boolean presenceChanged = BrightnessSettings.PRESENCE_DETECTION.equals(key)
+                        || BrightnessSettings.KEEP_SCREEN_ON.equals(key)
                         || BrightnessSettings.PRESENCE_DETECTION_READY.equals(key)
                         || BrightnessSettings.PERSON_PRESENT.equals(key);
                 if (!brightnessChanged && !burnInChanged && !presenceChanged) {
@@ -631,7 +632,7 @@ public final class MijiaPanelModule extends XposedModule {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
             return;
         }
-        boolean keepScreenOn = true;
+        boolean keepScreenOn = BrightnessSettings.DEFAULT_KEEP_SCREEN_ON;
         try {
             SharedPreferences preferences = getBrightnessPreferences();
             boolean detectionEnabled = preferences.getBoolean(
@@ -645,6 +646,10 @@ public final class MijiaPanelModule extends XposedModule {
                         BrightnessSettings.PERSON_PRESENT,
                         false);
                 keepScreenOn = !ready || present;
+            } else {
+                keepScreenOn = preferences.getBoolean(
+                        BrightnessSettings.KEEP_SCREEN_ON,
+                        BrightnessSettings.DEFAULT_KEEP_SCREEN_ON);
             }
         } catch (Throwable error) {
             logFailure("Unable to read presence detection state", error);
