@@ -86,6 +86,7 @@ class SettingsActivity : ComponentActivity() {
     private var brightnessDragging by mutableStateOf(false)
     private var remotePreferencesReady by mutableStateOf(false)
     private var launcherIconVisible by mutableStateOf(true)
+    private var showOpenSourceLicenses by mutableStateOf(false)
     private var updateStatus by mutableStateOf("")
     private var updateButtonEnabled by mutableStateOf(true)
     private var availableUpdate by mutableStateOf<AppUpdater.UpdateInfo?>(null)
@@ -343,8 +344,42 @@ class SettingsActivity : ComponentActivity() {
                         }
                     }
                 }
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showOpenSourceLicenses = true }
+                            .padding(vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = getString(R.string.open_source_licenses),
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                text = getString(R.string.open_source_licenses_summary),
+                                modifier = Modifier.padding(top = 3.dp),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            text = "›",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 item { Spacer(Modifier.height(12.dp)) }
             }
+        }
+
+        if (showOpenSourceLicenses) {
+            OpenSourceLicensesSheet(
+                onDismiss = { showOpenSourceLicenses = false },
+                onOpenUrl = { openUrl(it) },
+            )
         }
 
     }

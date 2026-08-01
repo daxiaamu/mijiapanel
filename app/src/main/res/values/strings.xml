@@ -39,5 +39,14 @@
     <string name="developer_name">大侠阿木</string>
     <string name="developer_description">MijiaPanel开发者</string>
     <string name="repository_name">daxiaamu/mijiapanel</string>
+    <string name="open_source_licenses">开放源代码许可</string>
+    <string name="open_source_licenses_summary">查看本应用及所使用组件的许可与条款</string>
+    <string name="open_source_role_app">本应用</string>
+    <string name="open_source_role_dependency">开源依赖</string>
+    <string name="open_source_role_third_party">第三方组件</string>
+    <string name="open_source_license_label">许可：%1$s</string>
+    <string name="open_source_project_homepage">项目主页</string>
+    <string name="open_source_view_license">查看许可</string>
+    <string name="close">关闭</string>
     <string name="browser_not_available">无法打开浏览器</string>
 </resources>
