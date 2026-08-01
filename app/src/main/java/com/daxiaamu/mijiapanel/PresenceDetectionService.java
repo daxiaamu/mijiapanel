@@ -69,7 +69,17 @@ public final class PresenceDetectionService extends LifecycleService
         @Override
         public void onReceive(Context context, Intent intent) {
             if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
-                lastScreenOffElapsed = SystemClock.elapsedRealtime();
+                long now = SystemClock.elapsedRealtime();
+                lastScreenOffElapsed = now;
+                // Activity.onPause and ACTION_SCREEN_OFF are not delivered in a fixed order.
+                // Latch the panel session so the front camera remains available to wake the
+                // display even when the Activity has already reported itself as paused.
+                if (panelActive
+                        || now - lastPanelActiveElapsed <= PANEL_SCREEN_OFF_HANDOFF_MS) {
+                    panelScreenOffSession = true;
+                }
+            } else if (Intent.ACTION_SCREEN_ON.equals(intent.getAction())) {
+                panelScreenOffSession = false;
             }
             updateCameraState();
         }
@@ -85,13 +95,20 @@ public final class PresenceDetectionService extends LifecycleService
             if (panelStateToken == null || !panelStateToken.equals(receivedToken)) {
                 return;
             }
-            panelActive = intent.getBooleanExtra(
+            boolean nextPanelActive = intent.getBooleanExtra(
                     BrightnessSettings.EXTRA_PANEL_ACTIVE,
                     false);
-            if (panelActive) {
+            if (panelActive || nextPanelActive) {
                 lastPanelActiveElapsed = SystemClock.elapsedRealtime();
             }
+            panelActive = nextPanelActive;
             updateCameraState();
+            if (!nextPanelActive) {
+                // Keep the camera across the short Activity-pause/screen-off handoff. If this
+                // was an ordinary navigation away from the panel, it is stopped after the grace.
+                mainHandler.postDelayed(PresenceDetectionService.this::updateCameraState,
+                        PANEL_SCREEN_OFF_HANDOFF_MS);
+            }
         }
     };
     private final SharedPreferences.OnSharedPreferenceChangeListener preferenceListener =
@@ -121,6 +138,7 @@ public final class PresenceDetectionService extends LifecycleService
     private volatile long lastScreenOffElapsed;
     private volatile long lastPanelActiveElapsed;
     private volatile boolean panelActive;
+    private volatile boolean panelScreenOffSession;
     private volatile String panelStateToken;
 
     @Override
@@ -307,13 +325,10 @@ public final class PresenceDetectionService extends LifecycleService
     }
 
     private boolean shouldMonitorPanel(boolean panelActive) {
-        if (panelActive) {
+        if (panelActive || panelScreenOffSession) {
             return true;
         }
-        PowerManager powerManager = getSystemService(PowerManager.class);
-        return powerManager != null
-                && !powerManager.isInteractive()
-                && SystemClock.elapsedRealtime() - lastPanelActiveElapsed
+        return SystemClock.elapsedRealtime() - lastPanelActiveElapsed
                 <= PANEL_SCREEN_OFF_HANDOFF_MS;
     }
 

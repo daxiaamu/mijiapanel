@@ -61,6 +61,7 @@ public final class MijiaPanelModule extends XposedModule {
     private static final String PAD_PACKAGE_PREFIX = "com.xiaomi.smarthome.pad.";
     private static final int TARGET_SHORTEST_DP = 600;
     private static final int MIN_DENSITY_DPI = 240;
+    private static final long PANEL_PAUSE_STATE_DELAY_MS = 500L;
     private static final long BURN_IN_SHIFT_INTERVAL_MS = 3L * 60L * 1000L;
     private static final int BURN_IN_SHIFT_STEP_PX = 4;
     private static final String PAD_WAKE_LOCK_TAG = "smarthome:pow_sh_pad";
@@ -486,7 +487,18 @@ public final class MijiaPanelModule extends XposedModule {
                         Activity activity = (Activity) chain.getThisObject();
                         if (padActivity.isInstance(activity)) {
                             stopBurnInProtection(activity);
-                            publishPanelActive(activity, !isDeviceInteractive(activity));
+                            // PowerManager may still report interactive while onPause is running.
+                            // Publish after the screen transition has had a chance to settle so a
+                            // screen-off panel remains monitored for presence-triggered wake-up.
+                            activity.getWindow().getDecorView().postDelayed(
+                                    () -> {
+                                        if (!activity.isDestroyed()) {
+                                            publishPanelActive(
+                                                    activity,
+                                                    !isDeviceInteractive(activity));
+                                        }
+                                    },
+                                    PANEL_PAUSE_STATE_DELAY_MS);
                         }
                         return result;
                     });

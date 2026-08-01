@@ -144,7 +144,6 @@ class SettingsActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         title = getString(R.string.settings_title)
         launcherIconVisible = isLauncherIconVisible()
-        cameraPermissionGranted = hasCameraPermission()
         updateStatus = getString(R.string.update_auto_check_summary)
         setContent {
             MijiaPanelTheme {
@@ -313,7 +312,7 @@ class SettingsActivity : ComponentActivity() {
                         summary = getString(R.string.presence_detection_summary),
                         checked = presenceDetectionEnabled,
                         enabled = remotePreferencesReady,
-                        warning = if (cameraPermissionGranted) {
+                        warning = if (!presenceDetectionEnabled || cameraPermissionGranted) {
                             null
                         } else {
                             getString(R.string.presence_camera_permission_action)
@@ -626,6 +625,11 @@ class SettingsActivity : ComponentActivity() {
         checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
     private fun refreshCameraPermissionState() {
+        if (!presenceDetectionEnabled) {
+            cameraPermissionGranted = false
+            stopService(Intent(this, PresenceDetectionService::class.java))
+            return
+        }
         val granted = hasCameraPermission()
         cameraPermissionGranted = granted
         val serviceIntent = Intent(this, PresenceDetectionService::class.java)
@@ -717,10 +721,13 @@ class SettingsActivity : ComponentActivity() {
             .putBoolean(BrightnessSettings.PRESENCE_DETECTION, presenceDetectionEnabled)
             .apply()
         remotePreferencesReady = true
-        if (presenceDetectionEnabled &&
-            checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-        ) {
-            startForegroundService(Intent(this, PresenceDetectionService::class.java))
+        if (presenceDetectionEnabled) {
+            cameraPermissionGranted = hasCameraPermission()
+            if (cameraPermissionGranted) {
+                startForegroundService(Intent(this, PresenceDetectionService::class.java))
+            }
+        } else {
+            cameraPermissionGranted = false
         }
     }
 
