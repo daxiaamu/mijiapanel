@@ -18,6 +18,7 @@
     <string name="absence_screen_off">息屏</string>
     <string name="absence_minimum_brightness">最低亮度</string>
     <string name="presence_camera_permission_required">需要前置摄像头权限才能检测是否有人</string>
+    <string name="presence_camera_permission_action">未授予摄像头权限，点击前往授权</string>
     <string name="presence_notification_channel">人在检测</string>
     <string name="presence_notification_title">正在检测中控前是否有人</string>
     <string name="presence_notification_summary">检测仅在本机进行，不会保存或上传画面</string>

@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -104,6 +105,7 @@ class SettingsActivity : ComponentActivity() {
     private var presenceDetectionEnabled by mutableStateOf(
         BrightnessSettings.DEFAULT_PRESENCE_DETECTION,
     )
+    private var cameraPermissionGranted by mutableStateOf(false)
     private var absenceBehavior by mutableIntStateOf(
         BrightnessSettings.DEFAULT_ABSENCE_BEHAVIOR,
     )
@@ -118,6 +120,7 @@ class SettingsActivity : ComponentActivity() {
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
+        cameraPermissionGranted = granted
         if (granted) {
             persistPresenceDetection(true)
         } else {
@@ -140,6 +143,7 @@ class SettingsActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         title = getString(R.string.settings_title)
         launcherIconVisible = isLauncherIconVisible()
+        cameraPermissionGranted = hasCameraPermission()
         updateStatus = getString(R.string.update_auto_check_summary)
         setContent {
             MijiaPanelTheme {
@@ -152,6 +156,7 @@ class SettingsActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        refreshCameraPermissionState()
         refreshReadyDownload()
     }
 
@@ -307,6 +312,12 @@ class SettingsActivity : ComponentActivity() {
                         summary = getString(R.string.presence_detection_summary),
                         checked = presenceDetectionEnabled,
                         enabled = remotePreferencesReady,
+                        warning = if (cameraPermissionGranted) {
+                            null
+                        } else {
+                            getString(R.string.presence_camera_permission_action)
+                        },
+                        onWarningClick = { openAppPermissionSettings() },
                         onCheckedChange = { updatePresenceDetection(it) },
                     )
                 }
@@ -494,6 +505,8 @@ class SettingsActivity : ComponentActivity() {
         summary: String,
         checked: Boolean,
         enabled: Boolean = true,
+        warning: String? = null,
+        onWarningClick: (() -> Unit)? = null,
         onCheckedChange: (Boolean) -> Unit,
     ) {
         Row(
@@ -521,6 +534,19 @@ class SettingsActivity : ComponentActivity() {
                         alpha = if (enabled) 1f else 0.38f,
                     ),
                 )
+                if (warning != null) {
+                    Text(
+                        text = warning,
+                        modifier = Modifier
+                            .padding(top = 5.dp)
+                            .clickable(enabled = onWarningClick != null) {
+                                onWarningClick?.invoke()
+                            },
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
             Switch(
                 checked = checked,
@@ -554,13 +580,34 @@ class SettingsActivity : ComponentActivity() {
     }
 
     private fun updatePresenceDetection(enabled: Boolean) {
-        if (enabled && checkSelfPermission(Manifest.permission.CAMERA) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
+        if (enabled && !hasCameraPermission()) {
             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
             return
         }
         persistPresenceDetection(enabled)
+    }
+
+    private fun hasCameraPermission(): Boolean =
+        checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+
+    private fun refreshCameraPermissionState() {
+        val granted = hasCameraPermission()
+        cameraPermissionGranted = granted
+        val serviceIntent = Intent(this, PresenceDetectionService::class.java)
+        if (!granted) {
+            stopService(serviceIntent)
+        } else if (presenceDetectionEnabled && remotePreferencesReady) {
+            startForegroundService(serviceIntent)
+        }
+    }
+
+    private fun openAppPermissionSettings() {
+        startActivity(
+            Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", packageName, null),
+            ),
+        )
     }
 
     private fun persistPresenceDetection(enabled: Boolean) {
