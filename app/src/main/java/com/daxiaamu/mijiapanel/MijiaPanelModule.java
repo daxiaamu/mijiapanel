@@ -1,6 +1,7 @@
 package com.daxiaamu.mijiapanel;
 
 import android.app.Activity;
+import android.app.Application;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -175,6 +176,9 @@ public final class MijiaPanelModule extends XposedModule {
     }
 
     private void registerDebugReceiver(Context context) {
+        if (!isMainProcess()) {
+            return;
+        }
         if (!debugReceiverRegistered.compareAndSet(false, true)) {
             return;
         }
@@ -188,6 +192,21 @@ public final class MijiaPanelModule extends XposedModule {
         } catch (Throwable error) {
             debugReceiverRegistered.set(false);
             logFailure("Unable to register burn-in debug receiver", error);
+        }
+    }
+
+    private boolean isMainProcess() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                return TARGET_PACKAGE.equals(Application.getProcessName());
+            }
+            Class<?> activityThread = Class.forName("android.app.ActivityThread");
+            Method currentProcessName = activityThread.getDeclaredMethod("currentProcessName");
+            currentProcessName.setAccessible(true);
+            return TARGET_PACKAGE.equals(currentProcessName.invoke(null));
+        } catch (Throwable error) {
+            logFailure("Unable to identify Xiaomi Home main process", error);
+            return false;
         }
     }
 
