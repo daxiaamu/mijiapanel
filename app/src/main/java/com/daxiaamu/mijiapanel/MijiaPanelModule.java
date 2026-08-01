@@ -477,6 +477,35 @@ public final class MijiaPanelModule extends XposedModule {
                         }
                         return result;
                     });
+
+            Method activityOnResume = Activity.class.getDeclaredMethod("onResume");
+            activityOnResume.setAccessible(true);
+            hook(activityOnResume)
+                    .setId("mijia-panel.clear-presence-outside-pad")
+                    .setPriority(XposedInterface.PRIORITY_LOWEST)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        Activity activity = (Activity) chain.getThisObject();
+                        if (!padActivity.isInstance(activity)) {
+                            publishPanelActive(activity, false);
+                        }
+                        return result;
+                    });
+
+            Method onDestroy = Activity.class.getDeclaredMethod("onDestroy");
+            onDestroy.setAccessible(true);
+            hook(onDestroy)
+                    .setId("mijia-panel.stop-presence-on-pad-destroy")
+                    .setPriority(XposedInterface.PRIORITY_LOWEST)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        Activity activity = (Activity) chain.getThisObject();
+                        if (padActivity.isInstance(activity)) {
+                            publishPanelActive(activity, false);
+                            stopBurnInProtection(activity);
+                        }
+                        return result;
+                    });
         } catch (Throwable error) {
             logFailure("Unable to install pad system-bar hooks", error);
         }
