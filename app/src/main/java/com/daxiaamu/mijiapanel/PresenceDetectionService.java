@@ -96,8 +96,7 @@ public final class PresenceDetectionService extends LifecycleService
     };
     private final SharedPreferences.OnSharedPreferenceChangeListener preferenceListener =
             (preferences, key) -> {
-                if (BrightnessSettings.PRESENCE_DETECTION.equals(key)
-                        || BrightnessSettings.KEEP_SCREEN_ON.equals(key)) {
+                if (BrightnessSettings.PRESENCE_DETECTION.equals(key)) {
                     mainHandler.post(this::updateCameraState);
                 }
             };

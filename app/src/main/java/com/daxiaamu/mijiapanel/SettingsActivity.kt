@@ -15,15 +15,26 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -89,9 +100,6 @@ class SettingsActivity : ComponentActivity() {
     private var brightnessDragging by mutableStateOf(false)
     private var burnInProtectionEnabled by mutableStateOf(
         BrightnessSettings.DEFAULT_BURN_IN_PROTECTION,
-    )
-    private var keepScreenOnEnabled by mutableStateOf(
-        BrightnessSettings.DEFAULT_KEEP_SCREEN_ON,
     )
     private var presenceDetectionEnabled by mutableStateOf(
         BrightnessSettings.DEFAULT_PRESENCE_DETECTION,
@@ -295,15 +303,6 @@ class SettingsActivity : ComponentActivity() {
                 }
                 item {
                     SwitchSetting(
-                        title = getString(R.string.keep_screen_on),
-                        summary = getString(R.string.keep_screen_on_summary),
-                        checked = keepScreenOnEnabled,
-                        enabled = remotePreferencesReady,
-                        onCheckedChange = { updateKeepScreenOn(it) },
-                    )
-                }
-                item {
-                    SwitchSetting(
                         title = getString(R.string.presence_detection),
                         summary = getString(R.string.presence_detection_summary),
                         checked = presenceDetectionEnabled,
@@ -312,47 +311,67 @@ class SettingsActivity : ComponentActivity() {
                     )
                 }
                 item {
-                    val enabled = presenceDetectionEnabled && remotePreferencesReady
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp),
+                    AnimatedVisibility(
+                        visible = presenceDetectionEnabled,
+                        enter = fadeIn(tween(180)) +
+                            expandVertically(tween(220)) +
+                            slideInVertically(tween(220)) { -it / 4 },
+                        exit = fadeOut(tween(140)) +
+                            shrinkVertically(tween(180)) +
+                            slideOutVertically(tween(180)) { -it / 4 },
                     ) {
-                        Text(
-                            text = getString(R.string.absence_behavior),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = if (enabled) {
-                                MaterialTheme.colorScheme.onSurface
-                            } else {
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                            },
-                        )
-                        Text(
-                            text = getString(R.string.absence_behavior_summary),
-                            modifier = Modifier.padding(top = 3.dp, bottom = 10.dp),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
-                                alpha = if (enabled) 1f else 0.38f,
-                            ),
-                        )
-                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                            val options = listOf(
-                                BrightnessSettings.ABSENCE_SCREEN_OFF to
-                                    getString(R.string.absence_screen_off),
-                                BrightnessSettings.ABSENCE_MINIMUM_BRIGHTNESS to
-                                    getString(R.string.absence_minimum_brightness),
-                            )
-                            options.forEachIndexed { index, option ->
-                                SegmentedButton(
-                                    selected = absenceBehavior == option.first,
-                                    onClick = { updateAbsenceBehavior(option.first) },
-                                    shape = SegmentedButtonDefaults.itemShape(
-                                        index = index,
-                                        count = options.size,
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(IntrinsicSize.Min)
+                                .padding(start = 20.dp, top = 8.dp, bottom = 8.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(3.dp)
+                                    .fillMaxHeight()
+                                    .background(
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
                                     ),
-                                    enabled = enabled,
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 12.dp),
+                            ) {
+                                Text(
+                                    text = getString(R.string.absence_behavior),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Text(
+                                    text = getString(R.string.absence_behavior_summary),
+                                    modifier = Modifier.padding(top = 3.dp, bottom = 10.dp),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                SingleChoiceSegmentedButtonRow(
+                                    modifier = Modifier.fillMaxWidth(),
                                 ) {
-                                    Text(option.second)
+                                    val options = listOf(
+                                        BrightnessSettings.ABSENCE_SCREEN_OFF to
+                                            getString(R.string.absence_screen_off),
+                                        BrightnessSettings.ABSENCE_MINIMUM_BRIGHTNESS to
+                                            getString(R.string.absence_minimum_brightness),
+                                    )
+                                    options.forEachIndexed { index, option ->
+                                        SegmentedButton(
+                                            selected = absenceBehavior == option.first,
+                                            onClick = { updateAbsenceBehavior(option.first) },
+                                            shape = SegmentedButtonDefaults.itemShape(
+                                                index = index,
+                                                count = options.size,
+                                            ),
+                                            enabled = remotePreferencesReady,
+                                        ) {
+                                            Text(option.second)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -544,38 +563,10 @@ class SettingsActivity : ComponentActivity() {
         persistPresenceDetection(enabled)
     }
 
-    private fun updateKeepScreenOn(enabled: Boolean) {
-        keepScreenOnEnabled = enabled
-        if (enabled && presenceDetectionEnabled) {
-            presenceDetectionEnabled = false
-            getSharedPreferences(BrightnessSettings.PREFERENCES, MODE_PRIVATE)
-                .edit()
-                .putBoolean(BrightnessSettings.PRESENCE_DETECTION, false)
-                .apply()
-            stopService(Intent(this, PresenceDetectionService::class.java))
-        }
-        preferences?.edit()
-            ?.putBoolean(BrightnessSettings.KEEP_SCREEN_ON, enabled)
-            ?.apply {
-                if (enabled) {
-                    putBoolean(BrightnessSettings.PRESENCE_DETECTION, false)
-                }
-            }
-            ?.commit()
-    }
-
     private fun persistPresenceDetection(enabled: Boolean) {
         presenceDetectionEnabled = enabled
-        if (enabled) {
-            keepScreenOnEnabled = false
-        }
         preferences?.edit()
             ?.putBoolean(BrightnessSettings.PRESENCE_DETECTION, enabled)
-            ?.apply {
-                if (enabled) {
-                    putBoolean(BrightnessSettings.KEEP_SCREEN_ON, false)
-                }
-            }
             ?.commit()
         getSharedPreferences(BrightnessSettings.PREFERENCES, MODE_PRIVATE)
             .edit()
@@ -628,10 +619,6 @@ class SettingsActivity : ComponentActivity() {
             BrightnessSettings.BURN_IN_PROTECTION,
             BrightnessSettings.DEFAULT_BURN_IN_PROTECTION,
         )
-        keepScreenOnEnabled = remote.getBoolean(
-            BrightnessSettings.KEEP_SCREEN_ON,
-            BrightnessSettings.DEFAULT_KEEP_SCREEN_ON,
-        )
         presenceDetectionEnabled = remote.getBoolean(
             BrightnessSettings.PRESENCE_DETECTION,
             BrightnessSettings.DEFAULT_PRESENCE_DETECTION,
@@ -643,12 +630,6 @@ class SettingsActivity : ComponentActivity() {
             BrightnessSettings.ABSENCE_SCREEN_OFF,
             BrightnessSettings.ABSENCE_MINIMUM_BRIGHTNESS,
         )
-        if (presenceDetectionEnabled && keepScreenOnEnabled) {
-            keepScreenOnEnabled = false
-            remote.edit()
-                .putBoolean(BrightnessSettings.KEEP_SCREEN_ON, false)
-                .commit()
-        }
         getSharedPreferences(BrightnessSettings.PREFERENCES, MODE_PRIVATE)
             .edit()
             .putBoolean(BrightnessSettings.PRESENCE_DETECTION, presenceDetectionEnabled)

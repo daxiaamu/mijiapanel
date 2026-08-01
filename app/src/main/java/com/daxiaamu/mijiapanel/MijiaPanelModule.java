@@ -80,7 +80,6 @@ public final class MijiaPanelModule extends XposedModule {
                         || BrightnessSettings.BRIGHTNESS_PERCENT.equals(key);
                 boolean burnInChanged = BrightnessSettings.BURN_IN_PROTECTION.equals(key);
                 boolean presenceChanged = BrightnessSettings.PRESENCE_DETECTION.equals(key)
-                        || BrightnessSettings.KEEP_SCREEN_ON.equals(key)
                         || BrightnessSettings.ABSENCE_BEHAVIOR.equals(key)
                         || BrightnessSettings.PRESENCE_DETECTION_READY.equals(key)
                         || BrightnessSettings.PERSON_PRESENT.equals(key);
@@ -666,7 +665,7 @@ public final class MijiaPanelModule extends XposedModule {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
             return;
         }
-        boolean keepScreenOn = BrightnessSettings.DEFAULT_KEEP_SCREEN_ON;
+        boolean keepScreenOn = true;
         boolean detectionEnabled = false;
         try {
             SharedPreferences preferences = getBrightnessPreferences();
@@ -686,10 +685,6 @@ public final class MijiaPanelModule extends XposedModule {
                 keepScreenOn = !ready
                         || present
                         || absenceBehavior == BrightnessSettings.ABSENCE_MINIMUM_BRIGHTNESS;
-            } else {
-                keepScreenOn = preferences.getBoolean(
-                        BrightnessSettings.KEEP_SCREEN_ON,
-                        BrightnessSettings.DEFAULT_KEEP_SCREEN_ON);
             }
         } catch (Throwable error) {
             logFailure("Unable to read presence detection state", error);
@@ -700,7 +695,7 @@ public final class MijiaPanelModule extends XposedModule {
         } else {
             window.clearFlags(WindowManagerFlags.FLAG_KEEP_SCREEN_ON);
         }
-        applyPadWakeLockPolicy(detectionEnabled, keepScreenOn);
+        applyPadWakeLockPolicy(detectionEnabled);
     }
 
     private void hookPadWakeLock() {
@@ -776,23 +771,20 @@ public final class MijiaPanelModule extends XposedModule {
             boolean detectionEnabled = preferences.getBoolean(
                     BrightnessSettings.PRESENCE_DETECTION,
                     BrightnessSettings.DEFAULT_PRESENCE_DETECTION);
-            boolean keepScreenOn = preferences.getBoolean(
-                    BrightnessSettings.KEEP_SCREEN_ON,
-                    BrightnessSettings.DEFAULT_KEEP_SCREEN_ON);
-            return detectionEnabled || !keepScreenOn;
+            return detectionEnabled;
         } catch (Throwable error) {
             logFailure("Unable to read pad wake-lock policy", error);
             return false;
         }
     }
 
-    private void applyPadWakeLockPolicy(boolean detectionEnabled, boolean keepScreenOn) {
+    private void applyPadWakeLockPolicy(boolean detectionEnabled) {
         PowerManager.WakeLock wakeLock = padWakeLock.get();
         if (wakeLock == null) {
             return;
         }
         try {
-            boolean suppress = detectionEnabled || !keepScreenOn;
+            boolean suppress = detectionEnabled;
             if (suppress) {
                 int releases = 0;
                 while (wakeLock.isHeld() && releases++ < 8) {

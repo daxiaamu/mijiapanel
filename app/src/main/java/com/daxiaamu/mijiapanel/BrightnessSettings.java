@@ -5,7 +5,6 @@ final class BrightnessSettings {
     static final String LOCK_BRIGHTNESS = "lock_brightness";
     static final String BRIGHTNESS_PERCENT = "brightness_percent";
     static final String BURN_IN_PROTECTION = "burn_in_protection";
-    static final String KEEP_SCREEN_ON = "keep_screen_on";
     static final String ABSENCE_BEHAVIOR = "absence_behavior";
     static final String PRESENCE_DETECTION = "presence_detection";
     static final String PANEL_ACTIVE = "panel_active";
@@ -18,7 +17,6 @@ final class BrightnessSettings {
     static final String PERSON_PRESENT = "person_present";
     static final int DEFAULT_BRIGHTNESS_PERCENT = 50;
     static final boolean DEFAULT_BURN_IN_PROTECTION = false;
-    static final boolean DEFAULT_KEEP_SCREEN_ON = true;
     static final int ABSENCE_SCREEN_OFF = 0;
     static final int ABSENCE_MINIMUM_BRIGHTNESS = 1;
     static final int DEFAULT_ABSENCE_BEHAVIOR = ABSENCE_SCREEN_OFF;
