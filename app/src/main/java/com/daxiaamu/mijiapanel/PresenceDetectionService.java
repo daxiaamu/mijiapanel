@@ -37,6 +37,7 @@ import com.google.mlkit.vision.face.FaceDetector;
 import com.google.mlkit.vision.face.FaceDetectorOptions;
 
 import java.nio.ByteBuffer;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -57,6 +58,9 @@ public final class PresenceDetectionService extends LifecycleService
     private static final int MOTION_REQUIRED_FRAMES = 2;
     private static final int LUMA_DIFFERENCE_THRESHOLD = 18;
     private static final float MOTION_SAMPLE_RATIO = 0.025f;
+    private static final int LIGHTING_SHIFT_THRESHOLD = 6;
+    private static final float LIGHTING_CHANGED_RATIO = 0.75f;
+    private static final float LIGHTING_DIRECTION_RATIO = 0.90f;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService analysisExecutor = Executors.newSingleThreadExecutor();
@@ -70,10 +74,30 @@ public final class PresenceDetectionService extends LifecycleService
             updateCameraState();
         }
     };
+    private final BroadcastReceiver panelStateReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (!BrightnessSettings.PANEL_STATE_ACTION.equals(intent.getAction())) {
+                return;
+            }
+            String receivedToken = intent.getStringExtra(
+                    BrightnessSettings.EXTRA_PANEL_STATE_TOKEN);
+            if (panelStateToken == null || !panelStateToken.equals(receivedToken)) {
+                return;
+            }
+            panelActive = intent.getBooleanExtra(
+                    BrightnessSettings.EXTRA_PANEL_ACTIVE,
+                    false);
+            if (panelActive) {
+                lastPanelActiveElapsed = SystemClock.elapsedRealtime();
+            }
+            updateCameraState();
+        }
+    };
     private final SharedPreferences.OnSharedPreferenceChangeListener preferenceListener =
             (preferences, key) -> {
                 if (BrightnessSettings.PRESENCE_DETECTION.equals(key)
-                        || BrightnessSettings.PANEL_ACTIVE.equals(key)) {
+                        || BrightnessSettings.KEEP_SCREEN_ON.equals(key)) {
                     mainHandler.post(this::updateCameraState);
                 }
             };
@@ -97,6 +121,8 @@ public final class PresenceDetectionService extends LifecycleService
     private volatile long lastPresenceElapsed;
     private volatile long lastScreenOffElapsed;
     private volatile long lastPanelActiveElapsed;
+    private volatile boolean panelActive;
+    private volatile String panelStateToken;
 
     @Override
     public void onCreate() {
@@ -120,6 +146,11 @@ public final class PresenceDetectionService extends LifecycleService
                 screenReceiver,
                 screenFilter,
                 ContextCompat.RECEIVER_NOT_EXPORTED);
+        ContextCompat.registerReceiver(
+                this,
+                panelStateReceiver,
+                new IntentFilter(BrightnessSettings.PANEL_STATE_ACTION),
+                ContextCompat.RECEIVER_EXPORTED);
         mainHandler.post(stateTick);
     }
 
@@ -148,7 +179,9 @@ public final class PresenceDetectionService extends LifecycleService
             }
             remotePreferences = preferences;
             preferences.registerOnSharedPreferenceChangeListener(preferenceListener);
+            panelStateToken = UUID.randomUUID().toString();
             preferences.edit()
+                    .putString(BrightnessSettings.PANEL_STATE_TOKEN, panelStateToken)
                     .putBoolean(BrightnessSettings.PRESENCE_DETECTION_READY, false)
                     .putBoolean(BrightnessSettings.PERSON_PRESENT, false)
                     .commit();
@@ -201,7 +234,6 @@ public final class PresenceDetectionService extends LifecycleService
             stopSelf();
             return;
         }
-        boolean panelActive = preferences.getBoolean(BrightnessSettings.PANEL_ACTIVE, false);
         if (panelActive) {
             lastPanelActiveElapsed = SystemClock.elapsedRealtime();
         }
@@ -250,10 +282,11 @@ public final class PresenceDetectionService extends LifecycleService
                 imageAnalysis = analysis;
                 cameraStarting = false;
                 cameraBound = true;
-                lastPresenceElapsed = 0L;
+                // Give a newly started detector a full absence-confirmation window.
+                lastPresenceElapsed = SystemClock.elapsedRealtime();
                 publishedPresence = null;
                 publishReady(true);
-                publishPresence(false);
+                publishPresence(true);
             } catch (Throwable error) {
                 cameraStarting = false;
                 cameraBound = false;
@@ -271,7 +304,6 @@ public final class PresenceDetectionService extends LifecycleService
                         BrightnessSettings.DEFAULT_PRESENCE_DETECTION)) {
             return false;
         }
-        boolean panelActive = preferences.getBoolean(BrightnessSettings.PANEL_ACTIVE, false);
         return shouldMonitorPanel(panelActive);
     }
 
@@ -316,10 +348,9 @@ public final class PresenceDetectionService extends LifecycleService
     }
 
     private void markPresence(boolean wakeScreen) {
-        boolean wasPresent = isWithinPresenceGrace();
         lastPresenceElapsed = SystemClock.elapsedRealtime();
         publishPresence(true);
-        if (wakeScreen && !wasPresent) {
+        if (wakeScreen) {
             wakeScreenIfNeeded();
         }
     }
@@ -361,6 +392,7 @@ public final class PresenceDetectionService extends LifecycleService
         mainHandler.removeCallbacks(stateTick);
         stopCamera();
         unregisterReceiver(screenReceiver);
+        unregisterReceiver(panelStateReceiver);
         if (remotePreferences != null) {
             remotePreferences.unregisterOnSharedPreferenceChangeListener(preferenceListener);
         }
@@ -447,16 +479,50 @@ public final class PresenceDetectionService extends LifecycleService
                 previousLuma = copyOf(current, count);
                 return false;
             }
+            int[] deltaHistogram = new int[511];
+            int significantDeltas = 0;
+            int brighterDeltas = 0;
+            int darkerDeltas = 0;
+            for (int index = 0; index < count; index++) {
+                int delta = (current[index] & 0xff) - (previousLuma[index] & 0xff);
+                deltaHistogram[delta + 255]++;
+                if (Math.abs(delta) >= LIGHTING_SHIFT_THRESHOLD) {
+                    significantDeltas++;
+                    if (delta > 0) {
+                        brighterDeltas++;
+                    } else {
+                        darkerDeltas++;
+                    }
+                }
+            }
+            int globalLightingShift = 0;
+            boolean mostPixelsChanged = significantDeltas >= count * LIGHTING_CHANGED_RATIO;
+            boolean sameDirection = significantDeltas > 0
+                    && Math.max(brighterDeltas, darkerDeltas)
+                    >= significantDeltas * LIGHTING_DIRECTION_RATIO;
+            if (mostPixelsChanged && sameDirection) {
+                int midpoint = count / 2;
+                int accumulated = 0;
+                for (int histogramIndex = 0;
+                        histogramIndex < deltaHistogram.length;
+                        histogramIndex++) {
+                    accumulated += deltaHistogram[histogramIndex];
+                    if (accumulated > midpoint) {
+                        globalLightingShift = histogramIndex - 255;
+                        break;
+                    }
+                }
+            }
             int changed = 0;
             for (int index = 0; index < count; index++) {
-                int difference = Math.abs(
-                        (current[index] & 0xff) - (previousLuma[index] & 0xff));
-                if (difference >= LUMA_DIFFERENCE_THRESHOLD) {
+                int delta = (current[index] & 0xff) - (previousLuma[index] & 0xff);
+                if (Math.abs(delta - globalLightingShift) >= LUMA_DIFFERENCE_THRESHOLD) {
                     changed++;
                 }
             }
             previousLuma = copyOf(current, count);
-            return count > 0 && changed / (float) count >= MOTION_SAMPLE_RATIO;
+            float changedRatio = count == 0 ? 0.0f : changed / (float) count;
+            return changedRatio >= MOTION_SAMPLE_RATIO;
         }
 
         private byte[] copyOf(byte[] source, int length) {

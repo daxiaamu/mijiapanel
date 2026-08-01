@@ -8,6 +8,7 @@ import android.content.pm.PackageInfo;
 import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.graphics.Color;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -62,11 +63,14 @@ public final class MijiaPanelModule extends XposedModule {
     private static final int MIN_DENSITY_DPI = 240;
     private static final long BURN_IN_SHIFT_INTERVAL_MS = 3L * 60L * 1000L;
     private static final int BURN_IN_SHIFT_STEP_PX = 4;
+    private static final String PAD_WAKE_LOCK_TAG = "smarthome:pow_sh_pad";
 
     private volatile Context targetContext;
     private volatile CompatibilityProfile compatibilityProfile = CompatibilityProfile.UNKNOWN;
     private volatile SharedPreferences brightnessPreferences;
     private volatile WeakReference<Activity> activePadActivity = new WeakReference<>(null);
+    private volatile WeakReference<PowerManager.WakeLock> padWakeLock =
+            new WeakReference<>(null);
     private final Object burnInControllerLock = new Object();
     private BurnInShiftController burnInController;
     private final AtomicBoolean compatibilityHooksInstalled = new AtomicBoolean();
@@ -77,9 +81,13 @@ public final class MijiaPanelModule extends XposedModule {
                 boolean burnInChanged = BrightnessSettings.BURN_IN_PROTECTION.equals(key);
                 boolean presenceChanged = BrightnessSettings.PRESENCE_DETECTION.equals(key)
                         || BrightnessSettings.KEEP_SCREEN_ON.equals(key)
+                        || BrightnessSettings.ABSENCE_BEHAVIOR.equals(key)
                         || BrightnessSettings.PRESENCE_DETECTION_READY.equals(key)
                         || BrightnessSettings.PERSON_PRESENT.equals(key);
-                if (!brightnessChanged && !burnInChanged && !presenceChanged) {
+                boolean panelStateTokenChanged =
+                        BrightnessSettings.PANEL_STATE_TOKEN.equals(key);
+                if (!brightnessChanged && !burnInChanged && !presenceChanged
+                        && !panelStateTokenChanged) {
                     return;
                 }
                 Activity activity = activePadActivity.get();
@@ -93,6 +101,10 @@ public final class MijiaPanelModule extends XposedModule {
                         }
                         if (presenceChanged) {
                             applyKeepScreenPolicy(activity);
+                            applyBrightnessSetting(activity);
+                        }
+                        if (panelStateTokenChanged) {
+                            publishPanelActive(activity, true);
                         }
                     });
                 }
@@ -114,6 +126,7 @@ public final class MijiaPanelModule extends XposedModule {
         hookPadActivityContexts(loader);
         hookCentralControlEntry(loader);
         hookPadSystemBars(loader);
+        hookPadWakeLock();
     }
 
     private void captureApplicationContext(ClassLoader loader) {
@@ -575,7 +588,25 @@ public final class MijiaPanelModule extends XposedModule {
         float requestedBrightness = -1.0f;
         try {
             SharedPreferences preferences = getBrightnessPreferences();
-            if (preferences.getBoolean(BrightnessSettings.LOCK_BRIGHTNESS, false)) {
+            boolean detectionEnabled = preferences.getBoolean(
+                    BrightnessSettings.PRESENCE_DETECTION,
+                    BrightnessSettings.DEFAULT_PRESENCE_DETECTION);
+            boolean detectionReady = preferences.getBoolean(
+                    BrightnessSettings.PRESENCE_DETECTION_READY,
+                    false);
+            boolean personPresent = preferences.getBoolean(
+                    BrightnessSettings.PERSON_PRESENT,
+                    false);
+            int absenceBehavior = preferences.getInt(
+                    BrightnessSettings.ABSENCE_BEHAVIOR,
+                    BrightnessSettings.DEFAULT_ABSENCE_BEHAVIOR);
+            boolean useMinimumBrightness = detectionEnabled
+                    && detectionReady
+                    && !personPresent
+                    && absenceBehavior == BrightnessSettings.ABSENCE_MINIMUM_BRIGHTNESS;
+            if (useMinimumBrightness) {
+                requestedBrightness = 0.01f;
+            } else if (preferences.getBoolean(BrightnessSettings.LOCK_BRIGHTNESS, false)) {
                 int percent = BrightnessSettings.clampPercent(preferences.getInt(
                         BrightnessSettings.BRIGHTNESS_PERCENT,
                         BrightnessSettings.DEFAULT_BRIGHTNESS_PERCENT));
@@ -612,10 +643,13 @@ public final class MijiaPanelModule extends XposedModule {
     private void publishPanelActive(Activity activity, boolean active) {
         try {
             SharedPreferences preferences = getBrightnessPreferences();
-            if (preferences.getBoolean(BrightnessSettings.PANEL_ACTIVE, false) != active) {
-                preferences.edit()
-                        .putBoolean(BrightnessSettings.PANEL_ACTIVE, active)
-                        .commit();
+            String token = preferences.getString(BrightnessSettings.PANEL_STATE_TOKEN, null);
+            if (token != null && !token.isEmpty()) {
+                Intent intent = new Intent(BrightnessSettings.PANEL_STATE_ACTION)
+                        .setPackage("com.daxiaamu.mijiapanel")
+                        .putExtra(BrightnessSettings.EXTRA_PANEL_ACTIVE, active)
+                        .putExtra(BrightnessSettings.EXTRA_PANEL_STATE_TOKEN, token);
+                activity.sendBroadcast(intent);
             }
         } catch (Throwable error) {
             logFailure("Unable to publish panel activity state", error);
@@ -633,9 +667,10 @@ public final class MijiaPanelModule extends XposedModule {
             return;
         }
         boolean keepScreenOn = BrightnessSettings.DEFAULT_KEEP_SCREEN_ON;
+        boolean detectionEnabled = false;
         try {
             SharedPreferences preferences = getBrightnessPreferences();
-            boolean detectionEnabled = preferences.getBoolean(
+            detectionEnabled = preferences.getBoolean(
                     BrightnessSettings.PRESENCE_DETECTION,
                     BrightnessSettings.DEFAULT_PRESENCE_DETECTION);
             if (detectionEnabled) {
@@ -645,7 +680,12 @@ public final class MijiaPanelModule extends XposedModule {
                 boolean present = preferences.getBoolean(
                         BrightnessSettings.PERSON_PRESENT,
                         false);
-                keepScreenOn = !ready || present;
+                int absenceBehavior = preferences.getInt(
+                        BrightnessSettings.ABSENCE_BEHAVIOR,
+                        BrightnessSettings.DEFAULT_ABSENCE_BEHAVIOR);
+                keepScreenOn = !ready
+                        || present
+                        || absenceBehavior == BrightnessSettings.ABSENCE_MINIMUM_BRIGHTNESS;
             } else {
                 keepScreenOn = preferences.getBoolean(
                         BrightnessSettings.KEEP_SCREEN_ON,
@@ -659,6 +699,110 @@ public final class MijiaPanelModule extends XposedModule {
             window.addFlags(WindowManagerFlags.FLAG_KEEP_SCREEN_ON);
         } else {
             window.clearFlags(WindowManagerFlags.FLAG_KEEP_SCREEN_ON);
+        }
+        applyPadWakeLockPolicy(detectionEnabled, keepScreenOn);
+    }
+
+    private void hookPadWakeLock() {
+        try {
+            Method newWakeLock = PowerManager.class.getDeclaredMethod(
+                    "newWakeLock",
+                    int.class,
+                    String.class);
+            hook(newWakeLock)
+                    .setId("mijia-panel.capture-pad-wake-lock")
+                    .setPriority(XposedInterface.PRIORITY_LOWEST)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        if (result instanceof PowerManager.WakeLock
+                                && PAD_WAKE_LOCK_TAG.equals(chain.getArg(1))) {
+                            PowerManager.WakeLock wakeLock = (PowerManager.WakeLock) result;
+                            padWakeLock = new WeakReference<>(wakeLock);
+                        }
+                        return result;
+                    });
+
+            Method acquire = PowerManager.WakeLock.class.getDeclaredMethod("acquire");
+            hook(acquire)
+                    .setId("mijia-panel.control-pad-wake-lock-acquire")
+                    .setPriority(XposedInterface.PRIORITY_HIGHEST)
+                    .intercept(chain -> {
+                        PowerManager.WakeLock wakeLock =
+                                (PowerManager.WakeLock) chain.getThisObject();
+                        if (isCapturedPadWakeLock(wakeLock) && shouldSuppressPadWakeLock()) {
+                            return null;
+                        }
+                        return chain.proceed();
+                    });
+
+            Method acquireWithTimeout =
+                    PowerManager.WakeLock.class.getDeclaredMethod("acquire", long.class);
+            hook(acquireWithTimeout)
+                    .setId("mijia-panel.control-pad-wake-lock-acquire-timeout")
+                    .setPriority(XposedInterface.PRIORITY_HIGHEST)
+                    .intercept(chain -> {
+                        PowerManager.WakeLock wakeLock =
+                                (PowerManager.WakeLock) chain.getThisObject();
+                        if (isCapturedPadWakeLock(wakeLock) && shouldSuppressPadWakeLock()) {
+                            return null;
+                        }
+                        return chain.proceed();
+                    });
+
+            Method release = PowerManager.WakeLock.class.getDeclaredMethod("release");
+            hook(release)
+                    .setId("mijia-panel.control-pad-wake-lock-release")
+                    .setPriority(XposedInterface.PRIORITY_HIGHEST)
+                    .intercept(chain -> {
+                        PowerManager.WakeLock wakeLock =
+                                (PowerManager.WakeLock) chain.getThisObject();
+                        if (isCapturedPadWakeLock(wakeLock) && !wakeLock.isHeld()) {
+                            return null;
+                        }
+                        return chain.proceed();
+                    });
+        } catch (Throwable error) {
+            logFailure("Unable to install pad wake-lock hooks", error);
+        }
+    }
+
+    private boolean isCapturedPadWakeLock(PowerManager.WakeLock wakeLock) {
+        return wakeLock != null && padWakeLock.get() == wakeLock;
+    }
+
+    private boolean shouldSuppressPadWakeLock() {
+        try {
+            SharedPreferences preferences = getBrightnessPreferences();
+            boolean detectionEnabled = preferences.getBoolean(
+                    BrightnessSettings.PRESENCE_DETECTION,
+                    BrightnessSettings.DEFAULT_PRESENCE_DETECTION);
+            boolean keepScreenOn = preferences.getBoolean(
+                    BrightnessSettings.KEEP_SCREEN_ON,
+                    BrightnessSettings.DEFAULT_KEEP_SCREEN_ON);
+            return detectionEnabled || !keepScreenOn;
+        } catch (Throwable error) {
+            logFailure("Unable to read pad wake-lock policy", error);
+            return false;
+        }
+    }
+
+    private void applyPadWakeLockPolicy(boolean detectionEnabled, boolean keepScreenOn) {
+        PowerManager.WakeLock wakeLock = padWakeLock.get();
+        if (wakeLock == null) {
+            return;
+        }
+        try {
+            boolean suppress = detectionEnabled || !keepScreenOn;
+            if (suppress) {
+                int releases = 0;
+                while (wakeLock.isHeld() && releases++ < 8) {
+                    wakeLock.release();
+                }
+            } else if (!wakeLock.isHeld()) {
+                wakeLock.acquire();
+            }
+        } catch (Throwable error) {
+            logFailure("Unable to apply pad wake-lock policy", error);
         }
     }
 

@@ -20,3 +20,7 @@
 ## 免责声明
 
 本项目为非官方开源模块，与小米或米家无关。使用前请自行评估兼容性与风险。
+
+## 许可证
+
+本项目以 GNU General Public License v3.0 或更高版本（`GPL-3.0-or-later`）发布，详见 [LICENSE](LICENSE)。

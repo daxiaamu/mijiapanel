@@ -42,6 +42,9 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -92,6 +95,9 @@ class SettingsActivity : ComponentActivity() {
     )
     private var presenceDetectionEnabled by mutableStateOf(
         BrightnessSettings.DEFAULT_PRESENCE_DETECTION,
+    )
+    private var absenceBehavior by mutableIntStateOf(
+        BrightnessSettings.DEFAULT_ABSENCE_BEHAVIOR,
     )
     private var remotePreferencesReady by mutableStateOf(false)
     private var launcherIconVisible by mutableStateOf(true)
@@ -304,6 +310,53 @@ class SettingsActivity : ComponentActivity() {
                         enabled = remotePreferencesReady,
                         onCheckedChange = { updatePresenceDetection(it) },
                     )
+                }
+                item {
+                    val enabled = presenceDetectionEnabled && remotePreferencesReady
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                    ) {
+                        Text(
+                            text = getString(R.string.absence_behavior),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = if (enabled) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            },
+                        )
+                        Text(
+                            text = getString(R.string.absence_behavior_summary),
+                            modifier = Modifier.padding(top = 3.dp, bottom = 10.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                                alpha = if (enabled) 1f else 0.38f,
+                            ),
+                        )
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            val options = listOf(
+                                BrightnessSettings.ABSENCE_SCREEN_OFF to
+                                    getString(R.string.absence_screen_off),
+                                BrightnessSettings.ABSENCE_MINIMUM_BRIGHTNESS to
+                                    getString(R.string.absence_minimum_brightness),
+                            )
+                            options.forEachIndexed { index, option ->
+                                SegmentedButton(
+                                    selected = absenceBehavior == option.first,
+                                    onClick = { updateAbsenceBehavior(option.first) },
+                                    shape = SegmentedButtonDefaults.itemShape(
+                                        index = index,
+                                        count = options.size,
+                                    ),
+                                    enabled = enabled,
+                                ) {
+                                    Text(option.second)
+                                }
+                            }
+                        }
+                    }
                 }
 
                 item { SectionDivider() }
@@ -537,6 +590,18 @@ class SettingsActivity : ComponentActivity() {
         }
     }
 
+    private fun updateAbsenceBehavior(behavior: Int) {
+        if (behavior != BrightnessSettings.ABSENCE_SCREEN_OFF &&
+            behavior != BrightnessSettings.ABSENCE_MINIMUM_BRIGHTNESS
+        ) {
+            return
+        }
+        absenceBehavior = behavior
+        preferences?.edit()
+            ?.putInt(BrightnessSettings.ABSENCE_BEHAVIOR, behavior)
+            ?.commit()
+    }
+
     private fun requestNotificationPermissionForPresence() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
@@ -570,6 +635,13 @@ class SettingsActivity : ComponentActivity() {
         presenceDetectionEnabled = remote.getBoolean(
             BrightnessSettings.PRESENCE_DETECTION,
             BrightnessSettings.DEFAULT_PRESENCE_DETECTION,
+        )
+        absenceBehavior = remote.getInt(
+            BrightnessSettings.ABSENCE_BEHAVIOR,
+            BrightnessSettings.DEFAULT_ABSENCE_BEHAVIOR,
+        ).coerceIn(
+            BrightnessSettings.ABSENCE_SCREEN_OFF,
+            BrightnessSettings.ABSENCE_MINIMUM_BRIGHTNESS,
         )
         if (presenceDetectionEnabled && keepScreenOnEnabled) {
             keepScreenOnEnabled = false
