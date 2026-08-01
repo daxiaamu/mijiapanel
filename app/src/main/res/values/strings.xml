@@ -3,10 +3,10 @@
     <string name="app_name">米家中控模式</string>
     <string name="module_description">使米家APP在手机上也可以显示中控入口和开启中控模式</string>
     <string name="settings_title">MijiaPanel</string>
-    <string name="settings_description">米家中控模式设置</string>
+    <string name="settings_description">米家中控模式</string>
     <string name="display_settings">显示设置</string>
     <string name="lock_brightness">锁定亮度</string>
-    <string name="lock_brightness_summary">关闭时跟随系统亮度；开启后使用下方设定的亮度。</string>
+    <string name="lock_brightness_summary">关闭时跟随系统亮度，开启时则锁定为用户设置的亮度</string>
     <string name="panel_brightness">中控界面亮度</string>
     <string name="brightness_percent">%1$d%%</string>
     <string name="burn_in_protection">防烧屏位移</string>
@@ -19,6 +19,11 @@
     <string name="absence_minimum_brightness">最低亮度</string>
     <string name="presence_camera_permission_required">需要前置摄像头权限才能检测是否有人</string>
     <string name="presence_camera_permission_action">未授予摄像头权限，点击前往授权</string>
+    <string name="presence_framework_scope_required">人在检测需要在 LSPosed 模块作用域中勾选“系统框架”</string>
+    <string name="presence_framework_scope_action">未启用“系统框架”作用域，点击授权</string>
+    <string name="presence_framework_scope_requesting">正在请求“系统框架”作用域…</string>
+    <string name="presence_framework_scope_failed">作用域同步失败，请点击重试或前往 LSPosed 手动勾选</string>
+    <string name="presence_framework_reboot_required">“系统框架”作用域已启用，请重启设备后生效</string>
     <string name="presence_notification_channel">人在检测</string>
     <string name="presence_notification_title">正在检测中控前是否有人</string>
     <string name="presence_notification_summary">检测仅在本机进行，不会保存或上传画面</string>

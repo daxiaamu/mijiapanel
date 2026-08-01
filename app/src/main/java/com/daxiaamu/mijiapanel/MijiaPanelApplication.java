@@ -17,6 +17,12 @@ public final class MijiaPanelApplication extends Application {
         void onServiceAvailable();
     }
 
+    interface ScopeRequestListener {
+        void onApproved();
+
+        void onFailed();
+    }
+
     private final Set<ServiceListener> listeners =
             Collections.newSetFromMap(new WeakHashMap<>());
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -44,6 +50,36 @@ public final class MijiaPanelApplication extends Application {
     SharedPreferences getRemotePreferences(String group) {
         XposedService service = xposedService;
         return service == null ? null : service.getRemotePreferences(group);
+    }
+
+    boolean isScopeEnabled(String packageName) {
+        XposedService service = xposedService;
+        return service != null && service.getScope().contains(packageName);
+    }
+
+    boolean requestScope(String packageName, ScopeRequestListener listener) {
+        XposedService service = xposedService;
+        if (service == null) {
+            return false;
+        }
+        try {
+            service.requestScope(
+                    Collections.singletonList(packageName),
+                    new XposedService.OnScopeEventListener() {
+                        @Override
+                        public void onScopeRequestApproved(java.util.List<String> scope) {
+                            listener.onApproved();
+                        }
+
+                        @Override
+                        public void onScopeRequestFailed(String message) {
+                            listener.onFailed();
+                        }
+                    });
+            return true;
+        } catch (Throwable error) {
+            return false;
+        }
     }
 
     void addServiceListener(ServiceListener listener) {

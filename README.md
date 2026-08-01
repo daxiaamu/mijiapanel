@@ -10,12 +10,12 @@
 
 - 保持米家设置中的“全屋中控”入口可见，但不会自动开启或进入中控模式。
 - 使用 Modern Xposed API 102。
-- 通过 `META-INF/xposed/scope.list` 自动推荐并同步唯一作用域 `com.xiaomi.smarthome`。
+- 通过 `META-INF/xposed/scope.list` 推荐“米家”和“系统框架”作用域。
 
 ## 使用
 
-安装 APK 后，在支持 Modern Xposed API 102 的 LSPosed/Vector 实现中启用模块。作用域应自动选择
-“米家”；强制停止米家后重新打开。
+安装 APK 后，在支持 Modern Xposed API 102 的 LSPosed/Vector 实现中启用模块。基础功能需要勾选
+“米家”；使用“人在检测”时还需勾选“系统框架”并重启设备。
 
 ## 免责声明
 

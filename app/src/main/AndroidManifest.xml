@@ -68,7 +68,8 @@
 
         <service
             android:name=".PresenceDetectionService"
-            android:exported="false"
+            android:exported="true"
+            android:permission="android.permission.START_FOREGROUND_SERVICES_FROM_BACKGROUND"
             android:foregroundServiceType="camera" />
     </application>
 </manifest>

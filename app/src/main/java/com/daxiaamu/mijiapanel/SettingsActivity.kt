@@ -106,6 +106,9 @@ class SettingsActivity : ComponentActivity() {
         BrightnessSettings.DEFAULT_PRESENCE_DETECTION,
     )
     private var cameraPermissionGranted by mutableStateOf(false)
+    private var systemFrameworkScopeGranted by mutableStateOf(false)
+    private var systemBridgeReady by mutableStateOf(false)
+    private var systemFrameworkScopeRequestPending by mutableStateOf(false)
     private var absenceBehavior by mutableIntStateOf(
         BrightnessSettings.DEFAULT_ABSENCE_BEHAVIOR,
     )
@@ -118,6 +121,15 @@ class SettingsActivity : ComponentActivity() {
     private var activeDownloadId = -1L
     private var readyDownloadId = -1L
     private var checkingUpdate = false
+    private val localPreferences by lazy {
+        getSharedPreferences(BrightnessSettings.PREFERENCES, MODE_PRIVATE)
+    }
+    private val localPreferenceListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == BrightnessSettings.SYSTEM_BRIDGE_BOOT_COUNT) {
+                handler.post(::refreshSystemBridgeReadyState)
+            }
+        }
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -150,6 +162,7 @@ class SettingsActivity : ComponentActivity() {
                 SettingsScreen()
             }
         }
+        localPreferences.registerOnSharedPreferenceChangeListener(localPreferenceListener)
         moduleApplication.addServiceListener(serviceListener)
         handler.postDelayed({ checkForUpdates(manual = false) }, 1_500L)
     }
@@ -157,11 +170,13 @@ class SettingsActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshCameraPermissionState()
+        refreshSystemFrameworkScopeState()
         refreshReadyDownload()
     }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        localPreferences.unregisterOnSharedPreferenceChangeListener(localPreferenceListener)
         moduleApplication.removeServiceListener(serviceListener)
         super.onDestroy()
     }
@@ -207,94 +222,127 @@ class SettingsActivity : ComponentActivity() {
                     )
                 }
                 item {
-                    val controlColor = if (brightnessLocked && remotePreferencesReady) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                    AnimatedVisibility(
+                        visible = brightnessLocked,
+                        enter = fadeIn(tween(180)) +
+                            expandVertically(tween(220)) +
+                            slideInVertically(tween(220)) { -it / 4 },
+                        exit = fadeOut(tween(140)) +
+                            shrinkVertically(tween(180)) +
+                            slideOutVertically(tween(180)) { -it / 4 },
                     ) {
-                        Text(
-                            text = getString(R.string.panel_brightness),
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = controlColor,
-                        )
-                        Text(
-                            text = getString(R.string.brightness_percent, brightnessPercent),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = controlColor,
-                        )
-                    }
-                    BoxWithConstraints(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp),
-                    ) {
-                        if (brightnessDragging) {
-                            val indicatorWidth = 184.dp
-                            val positionFraction =
-                                ((brightnessPercent - 1) / 99f).coerceIn(0f, 1f)
-                            val thumbCenter = 16.dp +
-                                (maxWidth - 32.dp) * positionFraction
-                            val indicatorOffset = (thumbCenter - indicatorWidth / 2f)
-                                .coerceIn(0.dp, maxWidth - indicatorWidth)
-                            val density = LocalDensity.current
-                            Popup(
-                                alignment = Alignment.TopStart,
-                                offset = with(density) {
-                                    IntOffset(
-                                        indicatorOffset.roundToPx(),
-                                        (-104).dp.roundToPx(),
-                                    )
-                                },
-                                properties = PopupProperties(
-                                    focusable = false,
-                                    clippingEnabled = false,
-                                ),
-                            ) {
-                                Text(
-                                    text = getString(
-                                        R.string.brightness_percent,
-                                        brightnessPercent,
-                                    ),
-                                    modifier = Modifier.width(indicatorWidth),
-                                    style = MaterialTheme.typography.displayLarge.copy(
-                                        shadow = Shadow(
-                                            color = MaterialTheme.colorScheme.surface,
-                                            offset = Offset.Zero,
-                                            blurRadius = 14f,
-                                        ),
-                                    ),
-                                    fontWeight = FontWeight.SemiBold,
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    color = controlColor,
-                                )
-                            }
-                        }
-                        Slider(
-                            value = brightnessPercent.toFloat(),
-                            onValueChange = {
-                                brightnessDragging = true
-                                setBrightness(it.roundToInt(), commit = false)
-                            },
-                            onValueChangeFinished = {
-                                setBrightness(brightnessPercent, commit = true)
-                                brightnessDragging = false
-                            },
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(52.dp)
-                                .align(Alignment.BottomCenter),
-                            enabled = brightnessLocked && remotePreferencesReady,
-                            valueRange = 1f..100f,
-                        )
+                                .height(IntrinsicSize.Min)
+                                .padding(start = 20.dp, top = 8.dp, bottom = 8.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(3.dp)
+                                    .fillMaxHeight()
+                                    .background(
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                                    ),
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 12.dp),
+                            ) {
+                                val controlColor = if (remotePreferencesReady) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = getString(R.string.panel_brightness),
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = controlColor,
+                                    )
+                                    Text(
+                                        text = getString(
+                                            R.string.brightness_percent,
+                                            brightnessPercent,
+                                        ),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = controlColor,
+                                    )
+                                }
+                                BoxWithConstraints(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(52.dp),
+                                ) {
+                                    if (brightnessDragging) {
+                                        val indicatorWidth = 184.dp
+                                        val positionFraction =
+                                            ((brightnessPercent - 1) / 99f).coerceIn(0f, 1f)
+                                        val thumbCenter = 16.dp +
+                                            (maxWidth - 32.dp) * positionFraction
+                                        val indicatorOffset =
+                                            (thumbCenter - indicatorWidth / 2f)
+                                                .coerceIn(0.dp, maxWidth - indicatorWidth)
+                                        val density = LocalDensity.current
+                                        Popup(
+                                            alignment = Alignment.TopStart,
+                                            offset = with(density) {
+                                                IntOffset(
+                                                    indicatorOffset.roundToPx(),
+                                                    (-104).dp.roundToPx(),
+                                                )
+                                            },
+                                            properties = PopupProperties(
+                                                focusable = false,
+                                                clippingEnabled = false,
+                                            ),
+                                        ) {
+                                            Text(
+                                                text = getString(
+                                                    R.string.brightness_percent,
+                                                    brightnessPercent,
+                                                ),
+                                                modifier = Modifier.width(indicatorWidth),
+                                                style = MaterialTheme.typography.displayLarge.copy(
+                                                    shadow = Shadow(
+                                                        color = MaterialTheme.colorScheme.surface,
+                                                        offset = Offset.Zero,
+                                                        blurRadius = 14f,
+                                                    ),
+                                                ),
+                                                fontWeight = FontWeight.SemiBold,
+                                                textAlign = TextAlign.Center,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                color = controlColor,
+                                            )
+                                        }
+                                    }
+                                    Slider(
+                                        value = brightnessPercent.toFloat(),
+                                        onValueChange = {
+                                            brightnessDragging = true
+                                            setBrightness(it.roundToInt(), commit = false)
+                                        },
+                                        onValueChangeFinished = {
+                                            setBrightness(brightnessPercent, commit = true)
+                                            brightnessDragging = false
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(52.dp)
+                                            .align(Alignment.BottomCenter),
+                                        enabled = remotePreferencesReady,
+                                        valueRange = 1f..100f,
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
                 item {
@@ -307,17 +355,39 @@ class SettingsActivity : ComponentActivity() {
                     )
                 }
                 item {
+                    val presenceWarning = when {
+                        !presenceDetectionEnabled -> null
+                        !cameraPermissionGranted ->
+                            getString(R.string.presence_camera_permission_action)
+                        !systemFrameworkScopeGranted ->
+                            getString(
+                                if (systemFrameworkScopeRequestPending) {
+                                    R.string.presence_framework_scope_requesting
+                                } else {
+                                    R.string.presence_framework_scope_action
+                                },
+                            )
+                        !systemBridgeReady ->
+                            getString(R.string.presence_framework_reboot_required)
+                        else -> null
+                    }
                     SwitchSetting(
                         title = getString(R.string.presence_detection),
                         summary = getString(R.string.presence_detection_summary),
                         checked = presenceDetectionEnabled,
                         enabled = remotePreferencesReady,
-                        warning = if (!presenceDetectionEnabled || cameraPermissionGranted) {
-                            null
+                        warning = presenceWarning,
+                        onWarningClick = if (
+                            presenceDetectionEnabled && !cameraPermissionGranted
+                        ) {
+                            { openAppPermissionSettings() }
+                        } else if (
+                            presenceDetectionEnabled && !systemFrameworkScopeGranted
+                        ) {
+                            { requestSystemFrameworkScope() }
                         } else {
-                            getString(R.string.presence_camera_permission_action)
+                            null
                         },
-                        onWarningClick = { openAppPermissionSettings() },
                         onCheckedChange = { updatePresenceDetection(it) },
                     )
                 }
@@ -592,6 +662,7 @@ class SettingsActivity : ComponentActivity() {
 
     private fun updateBrightnessLock(locked: Boolean) {
         brightnessLocked = locked
+        if (!locked) brightnessDragging = false
         preferences?.edit()
             ?.putBoolean(BrightnessSettings.LOCK_BRIGHTNESS, locked)
             ?.commit()
@@ -662,6 +733,10 @@ class SettingsActivity : ComponentActivity() {
         if (enabled) {
             startForegroundService(intent)
             requestNotificationPermissionForPresence()
+            refreshSystemFrameworkScopeState()
+            if (!systemFrameworkScopeGranted) {
+                requestSystemFrameworkScope()
+            }
         } else {
             stopService(intent)
         }
@@ -716,18 +791,96 @@ class SettingsActivity : ComponentActivity() {
             BrightnessSettings.ABSENCE_SCREEN_OFF,
             BrightnessSettings.ABSENCE_MINIMUM_BRIGHTNESS,
         )
-        getSharedPreferences(BrightnessSettings.PREFERENCES, MODE_PRIVATE)
-            .edit()
+        localPreferences.edit()
             .putBoolean(BrightnessSettings.PRESENCE_DETECTION, presenceDetectionEnabled)
             .apply()
         remotePreferencesReady = true
+        refreshSystemFrameworkScopeState()
         if (presenceDetectionEnabled) {
+            if (!systemFrameworkScopeGranted) {
+                requestSystemFrameworkScope()
+            }
             cameraPermissionGranted = hasCameraPermission()
             if (cameraPermissionGranted) {
                 startForegroundService(Intent(this, PresenceDetectionService::class.java))
             }
         } else {
             cameraPermissionGranted = false
+        }
+    }
+
+    private fun refreshSystemFrameworkScopeState() {
+        systemFrameworkScopeGranted = runCatching {
+            moduleApplication.isScopeEnabled("system")
+        }.getOrDefault(false)
+        if (systemFrameworkScopeGranted) {
+            systemFrameworkScopeRequestPending = false
+        }
+        refreshSystemBridgeReadyState()
+    }
+
+    private fun refreshSystemBridgeReadyState() {
+        val currentBootCount = Settings.Global.getInt(
+            contentResolver,
+            Settings.Global.BOOT_COUNT,
+            -1,
+        )
+        val localBootCount = localPreferences.getInt(
+            BrightnessSettings.SYSTEM_BRIDGE_BOOT_COUNT,
+            -1,
+        )
+        val remoteBootCount = preferences?.getInt(
+            BrightnessSettings.SYSTEM_BRIDGE_BOOT_COUNT,
+            -1,
+        ) ?: -1
+        systemBridgeReady = currentBootCount >= 0 &&
+            (localBootCount == currentBootCount || remoteBootCount == currentBootCount)
+    }
+
+    private fun requestSystemFrameworkScope() {
+        if (systemFrameworkScopeRequestPending) return
+        systemFrameworkScopeRequestPending = true
+        val requested = moduleApplication.requestScope(
+            "system",
+            object : MijiaPanelApplication.ScopeRequestListener {
+                override fun onApproved() {
+                    handler.post {
+                        systemFrameworkScopeRequestPending = false
+                        systemFrameworkScopeGranted = true
+                        systemBridgeReady = false
+                        localPreferences.edit()
+                            .putInt(BrightnessSettings.SYSTEM_BRIDGE_BOOT_COUNT, -1)
+                            .commit()
+                        preferences?.edit()
+                            ?.putInt(BrightnessSettings.SYSTEM_BRIDGE_BOOT_COUNT, -1)
+                            ?.commit()
+                        Toast.makeText(
+                            this@SettingsActivity,
+                            R.string.presence_framework_reboot_required,
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+
+                override fun onFailed() {
+                    handler.post {
+                        systemFrameworkScopeRequestPending = false
+                        Toast.makeText(
+                            this@SettingsActivity,
+                            R.string.presence_framework_scope_failed,
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+            },
+        )
+        if (!requested) {
+            systemFrameworkScopeRequestPending = false
+            Toast.makeText(
+                this,
+                R.string.presence_framework_scope_failed,
+                Toast.LENGTH_LONG,
+            ).show()
         }
     }
 

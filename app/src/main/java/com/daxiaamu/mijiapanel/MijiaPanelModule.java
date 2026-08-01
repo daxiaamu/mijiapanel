@@ -3,6 +3,7 @@ package com.daxiaamu.mijiapanel;
 import android.app.Activity;
 import android.app.Application;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -11,6 +12,8 @@ import android.content.pm.PackageInfo;
 import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.graphics.Color;
@@ -51,6 +54,17 @@ import org.luckypray.dexkit.wrap.DexMethod;
 public final class MijiaPanelModule extends XposedModule {
     private static final String TAG = "MijiaPanel";
     private static final String TARGET_PACKAGE = "com.xiaomi.smarthome";
+    private static final String SYSTEM_SCOPE_PACKAGE = "system";
+    private static final String SYSTEM_CONTEXT_PACKAGE = "android";
+    private static final String MODULE_PACKAGE = "com.daxiaamu.mijiapanel";
+    private static final String PRESENCE_SERVICE_CLASS =
+            "com.daxiaamu.mijiapanel.PresenceDetectionService";
+    private static final String SYSTEM_BRIDGE_ACTION =
+            "com.daxiaamu.mijiapanel.action.SYSTEM_BRIDGE";
+    private static final String EXTRA_SYSTEM_BRIDGE_COMMAND = "command";
+    private static final String EXTRA_SYSTEM_BRIDGE_TOKEN = "token";
+    private static final int SYSTEM_BRIDGE_START = 1;
+    private static final int SYSTEM_BRIDGE_STOP = 2;
     private static final String PAD_MAIN = "com.xiaomi.smarthome.pad.MainActivity";
     private static final String MODE_ACTIVITY =
             "com.xiaomi.smarthome.pad.settings.ModeActivity";
@@ -81,6 +95,10 @@ public final class MijiaPanelModule extends XposedModule {
     private final Object burnInControllerLock = new Object();
     private BurnInShiftController burnInController;
     private final AtomicBoolean debugReceiverRegistered = new AtomicBoolean();
+    private final AtomicBoolean systemBridgeHookInstalled = new AtomicBoolean();
+    private final AtomicBoolean oplusStartupAllowanceHookInstalled = new AtomicBoolean();
+    private final AtomicBoolean systemBridgeRetryScheduled = new AtomicBoolean();
+    private final AtomicBoolean systemBridgeReceiverRegistered = new AtomicBoolean();
     private final AtomicBoolean compatibilityHooksInstalled = new AtomicBoolean();
     private final BroadcastReceiver debugReceiver = new BroadcastReceiver() {
         @Override
@@ -98,6 +116,49 @@ public final class MijiaPanelModule extends XposedModule {
             setResultData(status);
         }
     };
+    private final BroadcastReceiver systemBridgeReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (!SYSTEM_BRIDGE_ACTION.equals(intent.getAction())) {
+                return;
+            }
+            try {
+                SharedPreferences preferences = getRemotePreferences(
+                        BrightnessSettings.PREFERENCES);
+                String expectedToken = preferences.getString(
+                        BrightnessSettings.PANEL_STATE_TOKEN,
+                        null);
+                String receivedToken = intent.getStringExtra(EXTRA_SYSTEM_BRIDGE_TOKEN);
+                if (expectedToken == null || !expectedToken.equals(receivedToken)) {
+                    log(Log.WARN, TAG, "Rejected presence bridge request with invalid token");
+                    return;
+                }
+                int command = intent.getIntExtra(EXTRA_SYSTEM_BRIDGE_COMMAND, 0);
+                Intent serviceIntent = new Intent()
+                        .setClassName(MODULE_PACKAGE, PRESENCE_SERVICE_CLASS)
+                        .putExtra(BrightnessSettings.EXTRA_SYSTEM_BRIDGE_START, true);
+                if (command == SYSTEM_BRIDGE_START) {
+                    boolean enabled = preferences.getBoolean(
+                            BrightnessSettings.PRESENCE_DETECTION,
+                            BrightnessSettings.DEFAULT_PRESENCE_DETECTION);
+                    if (!enabled) {
+                        return;
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        context.startForegroundService(serviceIntent);
+                    } else {
+                        context.startService(serviceIntent);
+                    }
+                    log(Log.INFO, TAG, "System bridge started presence service");
+                } else if (command == SYSTEM_BRIDGE_STOP) {
+                    context.stopService(serviceIntent);
+                    log(Log.INFO, TAG, "System bridge stopped presence service");
+                }
+            } catch (Throwable error) {
+                logFailure("Presence system bridge request failed", error);
+            }
+        }
+    };
     private final SharedPreferences.OnSharedPreferenceChangeListener brightnessChangeListener =
             (preferences, key) -> {
                 boolean brightnessChanged = BrightnessSettings.LOCK_BRIGHTNESS.equals(key)
@@ -109,11 +170,19 @@ public final class MijiaPanelModule extends XposedModule {
                         || BrightnessSettings.PERSON_PRESENT.equals(key);
                 boolean panelStateTokenChanged =
                         BrightnessSettings.PANEL_STATE_TOKEN.equals(key);
+                boolean presenceToggleChanged =
+                        BrightnessSettings.PRESENCE_DETECTION.equals(key);
                 if (!brightnessChanged && !burnInChanged && !presenceChanged
                         && !panelStateTokenChanged) {
                     return;
                 }
                 Activity activity = activePadActivity.get();
+                if (presenceToggleChanged || panelStateTokenChanged) {
+                    Context context = activity != null ? activity : targetContext;
+                    if (context != null) {
+                        requestPresenceServiceBridge(context);
+                    }
+                }
                 if (activity != null && !activity.isFinishing() && !activity.isDestroyed()) {
                     activity.runOnUiThread(() -> {
                         if (brightnessChanged) {
@@ -139,7 +208,20 @@ public final class MijiaPanelModule extends XposedModule {
     }
 
     @Override
+    public void onSystemServerStarting(
+            XposedModuleInterface.SystemServerStartingParam param) {
+        log(Log.INFO, TAG, "System server starting; installing presence bridge");
+        ClassLoader loader = param.getClassLoader();
+        hookOplusStartupAllowance(loader);
+        hookSystemBridge(loader);
+    }
+
+    @Override
     public void onPackageReady(XposedModuleInterface.PackageReadyParam param) {
+        if (SYSTEM_SCOPE_PACKAGE.equals(param.getPackageName())) {
+            installSystemBridge(param.getClassLoader());
+            return;
+        }
         if (!TARGET_PACKAGE.equals(param.getPackageName())) {
             return;
         }
@@ -150,6 +232,173 @@ public final class MijiaPanelModule extends XposedModule {
         hookCentralControlEntry(loader);
         hookPadSystemBars(loader);
         hookPadWakeLock();
+    }
+
+    private void hookSystemBridge(ClassLoader loader) {
+        if (!systemBridgeHookInstalled.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            Class<?> systemServer = Class.forName(
+                    "com.android.server.SystemServer",
+                    false,
+                    loader);
+            Method nextStartupPhase = null;
+            for (Method method : systemServer.getDeclaredMethods()) {
+                if ("startCoreServices".equals(method.getName())) {
+                    nextStartupPhase = method;
+                    break;
+                }
+            }
+            if (nextStartupPhase == null) {
+                for (Method method : systemServer.getDeclaredMethods()) {
+                    if ("startOtherServices".equals(method.getName())) {
+                        nextStartupPhase = method;
+                        break;
+                    }
+                }
+            }
+            if (nextStartupPhase == null) {
+                throw new NoSuchMethodException(
+                        "SystemServer.startCoreServices/startOtherServices");
+            }
+            nextStartupPhase.setAccessible(true);
+            hook(nextStartupPhase)
+                    .setId("mijia-panel.system-presence-bridge")
+                    .setPriority(XposedInterface.PRIORITY_HIGHEST)
+                    .intercept(chain -> {
+                        installSystemBridge(loader);
+                        return chain.proceed();
+                    });
+        } catch (Throwable error) {
+            systemBridgeHookInstalled.set(false);
+            logFailure("Unable to install presence system bridge", error);
+            scheduleSystemBridgeRetry(loader);
+        }
+    }
+
+    private void hookOplusStartupAllowance(ClassLoader loader) {
+        if (!oplusStartupAllowanceHookInstalled.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            Class<?> managerClass = Class.forName(
+                    "com.android.server.am.OplusAppStartupManager",
+                    false,
+                    loader);
+            Method target = null;
+            for (Method method : managerClass.getDeclaredMethods()) {
+                Class<?>[] parameters = method.getParameterTypes();
+                if ("isAllowStartFromStartService".equals(method.getName())
+                        && parameters.length == 6
+                        && Intent.class.isAssignableFrom(parameters[5])) {
+                    target = method;
+                    break;
+                }
+            }
+            if (target == null) {
+                throw new NoSuchMethodException(
+                        "OplusAppStartupManager.isAllowStartFromStartService");
+            }
+            target.setAccessible(true);
+            hook(target)
+                    .setId("mijia-panel.oplus-presence-service-allowance")
+                    .setPriority(XposedInterface.PRIORITY_HIGHEST)
+                    .intercept(chain -> {
+                        int callingUid = (Integer) chain.getArg(2);
+                        String callingPackage = (String) chain.getArg(3);
+                        Intent intent = (Intent) chain.getArg(5);
+                        ComponentName component = intent == null ? null : intent.getComponent();
+                        if (callingUid == android.os.Process.SYSTEM_UID
+                                && SYSTEM_CONTEXT_PACKAGE.equals(callingPackage)
+                                && component != null
+                                && MODULE_PACKAGE.equals(component.getPackageName())
+                                && PRESENCE_SERVICE_CLASS.equals(component.getClassName())) {
+                            log(Log.INFO, TAG,
+                                    "Allowed system bridge to start presence service on ColorOS");
+                            return true;
+                        }
+                        return chain.proceed();
+                    });
+            log(Log.INFO, TAG, "Installed ColorOS presence service allowance");
+        } catch (ClassNotFoundException ignored) {
+            oplusStartupAllowanceHookInstalled.set(false);
+        } catch (Throwable error) {
+            oplusStartupAllowanceHookInstalled.set(false);
+            logFailure("Unable to install ColorOS presence service allowance", error);
+        }
+    }
+
+    private void installSystemBridge(ClassLoader loader) {
+        Context context;
+        try {
+            Class<?> activityThread = Class.forName("android.app.ActivityThread", false, loader);
+            Method currentActivityThread = activityThread.getDeclaredMethod("currentActivityThread");
+            currentActivityThread.setAccessible(true);
+            Object thread = currentActivityThread.invoke(null);
+            if (thread == null) {
+                scheduleSystemBridgeRetry(loader);
+                return;
+            }
+            Method getSystemContext = activityThread.getDeclaredMethod("getSystemContext");
+            getSystemContext.setAccessible(true);
+            context = (Context) getSystemContext.invoke(thread);
+            if (context == null) {
+                scheduleSystemBridgeRetry(loader);
+                return;
+            }
+        } catch (Throwable error) {
+            logFailure("Unable to obtain system context for presence bridge", error);
+            scheduleSystemBridgeRetry(loader);
+            return;
+        }
+        if (!systemBridgeReceiverRegistered.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            IntentFilter filter = new IntentFilter(SYSTEM_BRIDGE_ACTION);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(
+                        systemBridgeReceiver,
+                        filter,
+                        Context.RECEIVER_EXPORTED);
+            } else {
+                context.registerReceiver(systemBridgeReceiver, filter);
+            }
+            log(Log.INFO, TAG, "Presence system bridge is ready");
+        } catch (Throwable error) {
+            systemBridgeReceiverRegistered.set(false);
+            logFailure("Unable to register presence system bridge", error);
+        }
+    }
+
+    private void scheduleSystemBridgeRetry(ClassLoader loader) {
+        if (!systemBridgeRetryScheduled.compareAndSet(false, true)) {
+            return;
+        }
+        Handler handler = new Handler(Looper.getMainLooper());
+        handler.postDelayed(new Runnable() {
+            private int attempts;
+
+            @Override
+            public void run() {
+                if (systemBridgeReceiverRegistered.get()) {
+                    systemBridgeRetryScheduled.set(false);
+                    return;
+                }
+                if (++attempts > 60) {
+                    systemBridgeRetryScheduled.set(false);
+                    log(Log.ERROR, TAG, "Presence system bridge context was not ready");
+                    return;
+                }
+                installSystemBridge(loader);
+                if (!systemBridgeReceiverRegistered.get()) {
+                    handler.postDelayed(this, 1_000L);
+                } else {
+                    systemBridgeRetryScheduled.set(false);
+                }
+            }
+        }, 1_000L);
     }
 
     private void captureApplicationContext(ClassLoader loader) {
@@ -598,6 +847,7 @@ public final class MijiaPanelModule extends XposedModule {
     private void applyPadWindowPolicy(Activity activity) {
         activePadActivity = new WeakReference<>(activity);
         publishPanelActive(activity, true);
+        requestPresenceServiceBridge(activity);
         hideSystemBars(activity);
         applyKeepScreenPolicy(activity);
         applyBrightnessSetting(activity);
@@ -723,6 +973,28 @@ public final class MijiaPanelModule extends XposedModule {
             }
         } catch (Throwable error) {
             logFailure("Unable to publish panel activity state", error);
+        }
+    }
+
+    private void requestPresenceServiceBridge(Context context) {
+        try {
+            SharedPreferences preferences = getBrightnessPreferences();
+            String token = preferences.getString(BrightnessSettings.PANEL_STATE_TOKEN, null);
+            if (token == null || token.isEmpty()) {
+                return;
+            }
+            boolean enabled = preferences.getBoolean(
+                    BrightnessSettings.PRESENCE_DETECTION,
+                    BrightnessSettings.DEFAULT_PRESENCE_DETECTION);
+            Intent intent = new Intent(SYSTEM_BRIDGE_ACTION)
+                    .setPackage(SYSTEM_CONTEXT_PACKAGE)
+                    .putExtra(
+                            EXTRA_SYSTEM_BRIDGE_COMMAND,
+                            enabled ? SYSTEM_BRIDGE_START : SYSTEM_BRIDGE_STOP)
+                    .putExtra(EXTRA_SYSTEM_BRIDGE_TOKEN, token);
+            context.sendBroadcast(intent);
+        } catch (Throwable error) {
+            logFailure("Unable to request presence system bridge", error);
         }
     }
 

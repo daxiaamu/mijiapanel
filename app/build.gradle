@@ -22,8 +22,8 @@ android {
         applicationId 'com.daxiaamu.mijiapanel'
         minSdk 26
         targetSdk 35
-        versionCode project.findProperty('versionCodeOverride')?.toInteger() ?: 6
-        versionName project.findProperty('versionNameOverride') ?: '1.0.5'
+        versionCode project.findProperty('versionCodeOverride')?.toInteger() ?: 7
+        versionName project.findProperty('versionNameOverride') ?: '1.1.0'
     }
 
     signingConfigs {

@@ -14,6 +14,8 @@ final class BrightnessSettings {
     static final String EXTRA_PANEL_ACTIVE = "panel_active";
     static final String EXTRA_PANEL_STATE_TOKEN = "panel_state_token";
     static final String PRESENCE_DETECTION_READY = "presence_detection_ready";
+    static final String SYSTEM_BRIDGE_BOOT_COUNT = "system_bridge_boot_count";
+    static final String EXTRA_SYSTEM_BRIDGE_START = "system_bridge_start";
     static final String PERSON_PRESENT = "person_present";
     static final int DEFAULT_BRIGHTNESS_PERCENT = 50;
     static final boolean DEFAULT_BURN_IN_PROTECTION = false;

@@ -18,6 +18,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import android.provider.Settings;
 
 import androidx.annotation.NonNull;
 import androidx.camera.core.CameraSelector;
@@ -140,6 +141,7 @@ public final class PresenceDetectionService extends LifecycleService
     private volatile boolean panelActive;
     private volatile boolean panelScreenOffSession;
     private volatile String panelStateToken;
+    private volatile boolean startedBySystemBridge;
 
     @Override
     public void onCreate() {
@@ -174,6 +176,12 @@ public final class PresenceDetectionService extends LifecycleService
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         super.onStartCommand(intent, flags, startId);
+        if (intent != null && intent.getBooleanExtra(
+                BrightnessSettings.EXTRA_SYSTEM_BRIDGE_START,
+                false)) {
+            startedBySystemBridge = true;
+            markSystemBridgeReady(remotePreferences);
+        }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED) {
             stopSelf();
@@ -202,8 +210,33 @@ public final class PresenceDetectionService extends LifecycleService
                     .putBoolean(BrightnessSettings.PRESENCE_DETECTION_READY, false)
                     .putBoolean(BrightnessSettings.PERSON_PRESENT, false)
                     .commit();
+            markSystemBridgeReady(preferences);
             updateCameraState();
         });
+    }
+
+    private void markSystemBridgeReady(SharedPreferences preferences) {
+        if (!startedBySystemBridge) {
+            return;
+        }
+        int bootCount = Settings.Global.getInt(
+                getContentResolver(),
+                Settings.Global.BOOT_COUNT,
+                -1);
+        if (bootCount >= 0) {
+            // Bridge readiness belongs to this app, so keep a local copy as the
+            // authoritative UI signal. Remote preferences can be delayed across the
+            // Xposed service boundary during early boot.
+            getSharedPreferences(BrightnessSettings.PREFERENCES, MODE_PRIVATE)
+                    .edit()
+                    .putInt(BrightnessSettings.SYSTEM_BRIDGE_BOOT_COUNT, bootCount)
+                    .commit();
+            if (preferences != null) {
+                preferences.edit()
+                        .putInt(BrightnessSettings.SYSTEM_BRIDGE_BOOT_COUNT, bootCount)
+                        .commit();
+            }
+        }
     }
 
     private void startCameraForeground() {
