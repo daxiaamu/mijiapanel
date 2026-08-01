@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -73,7 +74,6 @@ import kotlin.math.roundToInt
 class SettingsActivity : ComponentActivity() {
     private companion object {
         const val REPOSITORY_URL = "https://github.com/daxiaamu/mijiapanel"
-        const val NOTIFICATION_PERMISSION_REQUEST = 1001
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -84,6 +84,12 @@ class SettingsActivity : ComponentActivity() {
         BrightnessSettings.DEFAULT_BRIGHTNESS_PERCENT,
     )
     private var brightnessDragging by mutableStateOf(false)
+    private var burnInProtectionEnabled by mutableStateOf(
+        BrightnessSettings.DEFAULT_BURN_IN_PROTECTION,
+    )
+    private var presenceDetectionEnabled by mutableStateOf(
+        BrightnessSettings.DEFAULT_PRESENCE_DETECTION,
+    )
     private var remotePreferencesReady by mutableStateOf(false)
     private var launcherIconVisible by mutableStateOf(true)
     private var updateStatus by mutableStateOf("")
@@ -92,6 +98,22 @@ class SettingsActivity : ComponentActivity() {
     private var activeDownloadId = -1L
     private var readyDownloadId = -1L
     private var checkingUpdate = false
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            persistPresenceDetection(true)
+        } else {
+            Toast.makeText(
+                this,
+                R.string.presence_camera_permission_required,
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { }
 
     private val serviceListener = MijiaPanelApplication.ServiceListener {
         loadRemotePreferences()
@@ -252,6 +274,24 @@ class SettingsActivity : ComponentActivity() {
                             valueRange = 1f..100f,
                         )
                     }
+                }
+                item {
+                    SwitchSetting(
+                        title = getString(R.string.burn_in_protection),
+                        summary = getString(R.string.burn_in_protection_summary),
+                        checked = burnInProtectionEnabled,
+                        enabled = remotePreferencesReady,
+                        onCheckedChange = { updateBurnInProtection(it) },
+                    )
+                }
+                item {
+                    SwitchSetting(
+                        title = getString(R.string.presence_detection),
+                        summary = getString(R.string.presence_detection_summary),
+                        checked = presenceDetectionEnabled,
+                        enabled = remotePreferencesReady,
+                        onCheckedChange = { updatePresenceDetection(it) },
+                    )
                 }
 
                 item { SectionDivider() }
@@ -422,6 +462,50 @@ class SettingsActivity : ComponentActivity() {
         if (commit) editor.commit() else editor.apply()
     }
 
+    private fun updateBurnInProtection(enabled: Boolean) {
+        burnInProtectionEnabled = enabled
+        preferences?.edit()
+            ?.putBoolean(BrightnessSettings.BURN_IN_PROTECTION, enabled)
+            ?.commit()
+    }
+
+    private fun updatePresenceDetection(enabled: Boolean) {
+        if (enabled && checkSelfPermission(Manifest.permission.CAMERA) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            return
+        }
+        persistPresenceDetection(enabled)
+    }
+
+    private fun persistPresenceDetection(enabled: Boolean) {
+        presenceDetectionEnabled = enabled
+        preferences?.edit()
+            ?.putBoolean(BrightnessSettings.PRESENCE_DETECTION, enabled)
+            ?.commit()
+        getSharedPreferences(BrightnessSettings.PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putBoolean(BrightnessSettings.PRESENCE_DETECTION, enabled)
+            .apply()
+        val intent = Intent(this, PresenceDetectionService::class.java)
+        if (enabled) {
+            startForegroundService(intent)
+            requestNotificationPermissionForPresence()
+        } else {
+            stopService(intent)
+        }
+    }
+
+    private fun requestNotificationPermissionForPresence() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     private fun loadRemotePreferences() {
         val remote = moduleApplication.getRemotePreferences(
             BrightnessSettings.PREFERENCES,
@@ -435,7 +519,24 @@ class SettingsActivity : ComponentActivity() {
                 BrightnessSettings.DEFAULT_BRIGHTNESS_PERCENT,
             ),
         )
+        burnInProtectionEnabled = remote.getBoolean(
+            BrightnessSettings.BURN_IN_PROTECTION,
+            BrightnessSettings.DEFAULT_BURN_IN_PROTECTION,
+        )
+        presenceDetectionEnabled = remote.getBoolean(
+            BrightnessSettings.PRESENCE_DETECTION,
+            BrightnessSettings.DEFAULT_PRESENCE_DETECTION,
+        )
+        getSharedPreferences(BrightnessSettings.PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putBoolean(BrightnessSettings.PRESENCE_DETECTION, presenceDetectionEnabled)
+            .apply()
         remotePreferencesReady = true
+        if (presenceDetectionEnabled &&
+            checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        ) {
+            startForegroundService(Intent(this, PresenceDetectionService::class.java))
+        }
     }
 
     private fun migrateLocalPreferences(remote: SharedPreferences) {
@@ -565,10 +666,7 @@ class SettingsActivity : ComponentActivity() {
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
-            requestPermissions(
-                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                NOTIFICATION_PERMISSION_REQUEST,
-            )
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         runCatching { updater.download(this, info) }
             .onSuccess { id ->

@@ -9,6 +9,18 @@
     <string name="lock_brightness_summary">关闭时跟随系统亮度；开启后使用下方设定的亮度。</string>
     <string name="panel_brightness">中控界面亮度</string>
     <string name="brightness_percent">%1$d%%</string>
+    <string name="burn_in_protection">防烧屏位移</string>
+    <string name="burn_in_protection_summary">每隔3分钟轻微随机移动中控界面，能一定程度缓解烧屏</string>
+    <string name="presence_detection">有人时保持并自动点亮屏幕</string>
+    <string name="presence_detection_summary">使用前置摄像头检测动作和人脸；有人时保持亮屏，人来时自动点亮。图像仅在本机内存中处理</string>
+    <string name="presence_camera_permission_required">需要前置摄像头权限才能检测是否有人</string>
+    <string name="presence_notification_channel">人在检测</string>
+    <string name="presence_notification_title">正在检测中控前是否有人</string>
+    <string name="presence_notification_summary">检测仅在本机进行，不会保存或上传画面</string>
+    <string name="lock_screen_reminder_channel">自动亮屏设置</string>
+    <string name="lock_screen_reminder_title">请取消系统锁屏</string>
+    <string name="lock_screen_reminder_summary">要在人来时直接显示中控，请将锁屏方式设为“无”，包括取消“滑动”锁屏</string>
+    <string name="open_lock_screen_settings">前往锁屏设置</string>
 
     <string name="app_settings">应用设置</string>
     <string name="show_launcher_icon">显示桌面图标</string>
