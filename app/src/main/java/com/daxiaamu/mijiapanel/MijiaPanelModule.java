@@ -20,6 +20,7 @@ import android.widget.TextView;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -61,7 +62,20 @@ public final class MijiaPanelModule extends XposedModule {
 
     private volatile Context targetContext;
     private volatile CompatibilityProfile compatibilityProfile = CompatibilityProfile.UNKNOWN;
+    private volatile SharedPreferences brightnessPreferences;
+    private volatile WeakReference<Activity> activePadActivity = new WeakReference<>(null);
     private final AtomicBoolean compatibilityHooksInstalled = new AtomicBoolean();
+    private final SharedPreferences.OnSharedPreferenceChangeListener brightnessChangeListener =
+            (preferences, key) -> {
+                if (!BrightnessSettings.LOCK_BRIGHTNESS.equals(key)
+                        && !BrightnessSettings.BRIGHTNESS_PERCENT.equals(key)) {
+                    return;
+                }
+                Activity activity = activePadActivity.get();
+                if (activity != null && !activity.isFinishing() && !activity.isDestroyed()) {
+                    activity.runOnUiThread(() -> applyBrightnessSetting(activity));
+                }
+            };
 
     @Override
     public void onModuleLoaded(XposedModuleInterface.ModuleLoadedParam param) {
@@ -399,7 +413,7 @@ public final class MijiaPanelModule extends XposedModule {
                     .setPriority(XposedInterface.PRIORITY_LOWEST)
                     .intercept(chain -> {
                         Object result = chain.proceed();
-                        hideSystemBars((Activity) chain.getThisObject());
+                        applyPadWindowPolicy((Activity) chain.getThisObject());
                         return result;
                     });
 
@@ -410,7 +424,7 @@ public final class MijiaPanelModule extends XposedModule {
                     .setPriority(XposedInterface.PRIORITY_LOWEST)
                     .intercept(chain -> {
                         Object result = chain.proceed();
-                        hideSystemBars((Activity) chain.getThisObject());
+                        applyPadWindowPolicy((Activity) chain.getThisObject());
                         return result;
                     });
 
@@ -424,7 +438,7 @@ public final class MijiaPanelModule extends XposedModule {
                         Object result = chain.proceed();
                         Activity activity = (Activity) chain.getThisObject();
                         if ((boolean) chain.getArg(0) && padActivity.isInstance(activity)) {
-                            hideSystemBars(activity);
+                            applyPadWindowPolicy(activity);
                         }
                         return result;
                     });
@@ -433,12 +447,62 @@ public final class MijiaPanelModule extends XposedModule {
         }
     }
 
+    private void applyPadWindowPolicy(Activity activity) {
+        activePadActivity = new WeakReference<>(activity);
+        hideSystemBars(activity);
+        applyBrightnessSetting(activity);
+    }
+
+    private void applyBrightnessSetting(Activity activity) {
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
+            return;
+        }
+
+        float requestedBrightness = -1.0f;
+        try {
+            SharedPreferences preferences = getBrightnessPreferences();
+            if (preferences.getBoolean(BrightnessSettings.LOCK_BRIGHTNESS, false)) {
+                int percent = BrightnessSettings.clampPercent(preferences.getInt(
+                        BrightnessSettings.BRIGHTNESS_PERCENT,
+                        BrightnessSettings.DEFAULT_BRIGHTNESS_PERCENT));
+                requestedBrightness = percent / 100.0f;
+            }
+        } catch (Throwable error) {
+            logFailure("Unable to read panel brightness settings", error);
+        }
+
+        Window window = activity.getWindow();
+        android.view.WindowManager.LayoutParams attributes = window.getAttributes();
+        if (Float.compare(attributes.screenBrightness, requestedBrightness) != 0) {
+            attributes.screenBrightness = requestedBrightness;
+            window.setAttributes(attributes);
+        }
+    }
+
+    private SharedPreferences getBrightnessPreferences() {
+        SharedPreferences preferences = brightnessPreferences;
+        if (preferences != null) {
+            return preferences;
+        }
+        synchronized (this) {
+            preferences = brightnessPreferences;
+            if (preferences == null) {
+                preferences = getRemotePreferences(BrightnessSettings.PREFERENCES);
+                preferences.registerOnSharedPreferenceChangeListener(brightnessChangeListener);
+                brightnessPreferences = preferences;
+            }
+            return preferences;
+        }
+    }
+
     private static void hideSystemBars(Activity activity) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
             return;
         }
         Window window = activity.getWindow();
-        window.addFlags(WindowManagerFlags.FLAG_FULLSCREEN);
+        window.addFlags(
+                WindowManagerFlags.FLAG_FULLSCREEN
+                        | WindowManagerFlags.FLAG_KEEP_SCREEN_ON);
         window.setStatusBarColor(Color.TRANSPARENT);
         window.setNavigationBarColor(Color.TRANSPARENT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -470,6 +534,7 @@ public final class MijiaPanelModule extends XposedModule {
      * android.view.WindowManager solely for one flag.
      */
     private static final class WindowManagerFlags {
+        private static final int FLAG_KEEP_SCREEN_ON = 0x00000080;
         private static final int FLAG_FULLSCREEN = 0x00000400;
 
         private WindowManagerFlags() {

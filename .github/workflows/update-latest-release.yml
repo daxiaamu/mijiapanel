@@ -1,0 +1,109 @@
+name: Update latest release manifest
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish; leave empty to use the latest release
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: latest-release-manifest
+  cancel-in-progress: false
+
+jobs:
+  update-manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Generate latest-release.json
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          tag="$REQUESTED_TAG"
+          if [[ -z "$tag" ]]; then
+            tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          fi
+          if [[ ! "$tag" =~ ^([0-9]+)-(.+)$ ]]; then
+            echo "Release tag must use versionCode-versionName, for example 6-1.0.5" >&2
+            exit 1
+          fi
+
+          version_code="${BASH_REMATCH[1]}"
+          version_name="${BASH_REMATCH[2]}"
+          release_json="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json name,body,url,assets)"
+          release_name="$(jq -r '.name // empty' <<<"$release_json")"
+          release_notes="$(jq -r '.body // ""' <<<"$release_json")"
+          release_url="$(jq -r '.url' <<<"$release_json")"
+          apk_name="$(jq -r '[.assets[] | select(.name | endswith(".apk"))][0].name // empty' <<<"$release_json")"
+          apk_url="$(jq -r '[.assets[] | select(.name | endswith(".apk"))][0].url // empty' <<<"$release_json")"
+
+          if [[ -z "$apk_name" || -z "$apk_url" ]]; then
+            echo "Release $tag has no .apk asset" >&2
+            exit 1
+          fi
+
+          mkdir -p build/release-manifest
+          gh release download "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$apk_name" \
+            --dir build/release-manifest \
+            --clobber
+          apk_sha256="$(sha256sum "build/release-manifest/$apk_name" | cut -d' ' -f1)"
+
+          jq -n \
+            --argjson versionCode "$version_code" \
+            --arg versionName "$version_name" \
+            --arg tag "$tag" \
+            --arg title "${release_name:-MijiaPanel $version_name}" \
+            --arg notes "$release_notes" \
+            --arg releaseUrl "$release_url" \
+            --arg apkUrl "$apk_url" \
+            --arg apkSha256 "$apk_sha256" \
+            '{
+              versionCode: $versionCode,
+              versionName: $versionName,
+              tag: $tag,
+              title: $title,
+              notes: $notes,
+              releaseUrl: $releaseUrl,
+              apkUrls: [
+                ("https://gh-proxy.com/" + $apkUrl),
+                ("https://ghfast.top/" + $apkUrl),
+                ("https://ghproxy.net/" + $apkUrl),
+                ("https://gh.jasonzeng.dev/" + $apkUrl),
+                ("https://xget.xi-xu.me/gh/" + ($apkUrl | sub("^https://github.com/"; ""))),
+                $apkUrl
+              ],
+              apkUrl: $apkUrl,
+              apkSha256: $apkSha256
+            }' > latest-release.json
+
+      - name: Commit manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add latest-release.json
+          if git diff --cached --quiet; then
+            echo "latest-release.json is already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: update latest release manifest"
+          git pull --rebase origin main
+          git push origin HEAD:main

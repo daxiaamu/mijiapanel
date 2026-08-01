@@ -1,0 +1,18 @@
+{
+  "versionCode": 5,
+  "versionName": "1.0.4",
+  "tag": "5-1.0.4",
+  "title": "MijiaPanel 1.0.4",
+  "notes": "- 中控模式改为完整沉浸式全屏。\n- 新增米家 11.6.625、11.6.701、11.6.703、11.6.705 适配。\n- 其他版本会尝试自动识别关键 Hook 点。",
+  "releaseUrl": "https://github.com/daxiaamu/mijiapanel/releases/tag/5-1.0.4",
+  "apkUrls": [
+    "https://gh-proxy.com/https://github.com/daxiaamu/mijiapanel/releases/download/5-1.0.4/MijiaPanel-1.0.4.apk",
+    "https://ghfast.top/https://github.com/daxiaamu/mijiapanel/releases/download/5-1.0.4/MijiaPanel-1.0.4.apk",
+    "https://ghproxy.net/https://github.com/daxiaamu/mijiapanel/releases/download/5-1.0.4/MijiaPanel-1.0.4.apk",
+    "https://gh.jasonzeng.dev/https://github.com/daxiaamu/mijiapanel/releases/download/5-1.0.4/MijiaPanel-1.0.4.apk",
+    "https://xget.xi-xu.me/gh/daxiaamu/mijiapanel/releases/download/5-1.0.4/MijiaPanel-1.0.4.apk",
+    "https://github.com/daxiaamu/mijiapanel/releases/download/5-1.0.4/MijiaPanel-1.0.4.apk"
+  ],
+  "apkUrl": "https://github.com/daxiaamu/mijiapanel/releases/download/5-1.0.4/MijiaPanel-1.0.4.apk",
+  "apkSha256": "9fc1c3a32fe3ba526b480eedb141575c0abe60ecbaea5a71115ea75295b7bb83"
+}
