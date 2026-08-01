@@ -1,14 +1,17 @@
 package com.daxiaamu.mijiapanel;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.graphics.Color;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -64,6 +67,8 @@ public final class MijiaPanelModule extends XposedModule {
     private static final long PANEL_PAUSE_STATE_DELAY_MS = 500L;
     private static final long BURN_IN_SHIFT_INTERVAL_MS = 3L * 60L * 1000L;
     private static final int BURN_IN_SHIFT_STEP_PX = 4;
+    private static final String DEBUG_BURN_IN_STATUS_ACTION =
+            "com.daxiaamu.mijiapanel.action.DEBUG_BURN_IN_STATUS";
     private static final String PAD_WAKE_LOCK_TAG = "smarthome:pow_sh_pad";
 
     private volatile Context targetContext;
@@ -74,7 +79,24 @@ public final class MijiaPanelModule extends XposedModule {
             new WeakReference<>(null);
     private final Object burnInControllerLock = new Object();
     private BurnInShiftController burnInController;
+    private final AtomicBoolean debugReceiverRegistered = new AtomicBoolean();
     private final AtomicBoolean compatibilityHooksInstalled = new AtomicBoolean();
+    private final BroadcastReceiver debugReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (!DEBUG_BURN_IN_STATUS_ACTION.equals(intent.getAction())) {
+                return;
+            }
+            String status;
+            synchronized (burnInControllerLock) {
+                status = burnInController == null
+                        ? "burn-in active=false"
+                        : burnInController.debugStatus();
+            }
+            Log.i(TAG, status);
+            setResultData(status);
+        }
+    };
     private final SharedPreferences.OnSharedPreferenceChangeListener brightnessChangeListener =
             (preferences, key) -> {
                 boolean brightnessChanged = BrightnessSettings.LOCK_BRIGHTNESS.equals(key)
@@ -141,6 +163,7 @@ public final class MijiaPanelModule extends XposedModule {
                     .intercept(chain -> {
                         Context base = (Context) chain.getArg(0);
                         targetContext = base;
+                        registerDebugReceiver(base);
                         ensureCompatibilityHooks(loader, base);
                         // Never replace the Application context. A process-wide
                         // tablet override breaks the normal page after pad-mode exit.
@@ -148,6 +171,23 @@ public final class MijiaPanelModule extends XposedModule {
                     });
         } catch (Throwable error) {
             logFailure("Unable to hook SHApplication.attachBaseContext", error);
+        }
+    }
+
+    private void registerDebugReceiver(Context context) {
+        if (!debugReceiverRegistered.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            IntentFilter filter = new IntentFilter(DEBUG_BURN_IN_STATUS_ACTION);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(debugReceiver, filter, Context.RECEIVER_EXPORTED);
+            } else {
+                context.registerReceiver(debugReceiver, filter);
+            }
+        } catch (Throwable error) {
+            debugReceiverRegistered.set(false);
+            logFailure("Unable to register burn-in debug receiver", error);
         }
     }
 
@@ -872,6 +912,7 @@ public final class MijiaPanelModule extends XposedModule {
         private final View content;
         private int currentX;
         private int currentY;
+        private long nextShiftElapsedRealtime;
         private boolean stopped;
 
         BurnInShiftController(Activity activity, View content) {
@@ -881,7 +922,7 @@ public final class MijiaPanelModule extends XposedModule {
 
         void start() {
             content.removeCallbacks(this);
-            content.postDelayed(this, BURN_IN_SHIFT_INTERVAL_MS);
+            scheduleNext("Burn-in timer started");
         }
 
         boolean isFor(Activity activity) {
@@ -894,6 +935,20 @@ public final class MijiaPanelModule extends XposedModule {
             content.animate().cancel();
             content.setTranslationX(0.0f);
             content.setTranslationY(0.0f);
+            nextShiftElapsedRealtime = 0L;
+            Log.i(TAG, "Burn-in timer stopped");
+        }
+
+        String debugStatus() {
+            long remainingMs = Math.max(
+                    0L,
+                    nextShiftElapsedRealtime - SystemClock.elapsedRealtime());
+            long remainingSeconds = (remainingMs + 999L) / 1_000L;
+            return "burn-in active=" + !stopped
+                    + ", remainingSeconds=" + remainingSeconds
+                    + ", offsetX=" + currentX
+                    + ", offsetY=" + currentY
+                    + ", windowFocused=" + content.hasWindowFocus();
         }
 
         @Override
@@ -919,8 +974,18 @@ public final class MijiaPanelModule extends XposedModule {
                         .translationY(currentY)
                         .setDuration(SHIFT_ANIMATION_MS)
                         .start();
+                scheduleNext("Burn-in shifted to (" + currentX + ", " + currentY + ")");
+            } else {
+                scheduleNext("Burn-in shift skipped because the window has no focus");
             }
+        }
+
+        private void scheduleNext(String event) {
+            nextShiftElapsedRealtime = SystemClock.elapsedRealtime()
+                    + BURN_IN_SHIFT_INTERVAL_MS;
             content.postDelayed(this, BURN_IN_SHIFT_INTERVAL_MS);
+            Log.i(TAG, event + "; next attempt in "
+                    + (BURN_IN_SHIFT_INTERVAL_MS / 1_000L) + "s");
         }
     }
 
