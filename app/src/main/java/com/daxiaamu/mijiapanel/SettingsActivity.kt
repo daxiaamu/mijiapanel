@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -44,6 +45,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -90,6 +92,7 @@ class SettingsActivity : ComponentActivity() {
     private var updateStatus by mutableStateOf("")
     private var updateButtonEnabled by mutableStateOf(true)
     private var availableUpdate by mutableStateOf<AppUpdater.UpdateInfo?>(null)
+    private var updateConfirmation by mutableStateOf<AppUpdater.UpdateInfo?>(null)
     private var activeDownloadId = -1L
     private var readyDownloadId = -1L
     private var checkingUpdate = false
@@ -382,6 +385,66 @@ class SettingsActivity : ComponentActivity() {
             )
         }
 
+        updateConfirmation?.let { info ->
+            UpdateConfirmationDialog(
+                info = info,
+                onDismiss = {
+                    updateConfirmation = null
+                    updateButtonEnabled = true
+                },
+                onDownload = {
+                    updateConfirmation = null
+                    startDownload(info)
+                },
+            )
+        }
+
+    }
+
+    @Composable
+    private fun UpdateConfirmationDialog(
+        info: AppUpdater.UpdateInfo,
+        onDismiss: () -> Unit,
+        onDownload: () -> Unit,
+    ) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = {
+                Text(
+                    getString(
+                        R.string.update_dialog_title,
+                        displayVersion(info.versionName),
+                    ),
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = getString(R.string.update_release_notes),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    MarkdownReleaseNotes(
+                        markdown = info.notes.ifBlank {
+                            getString(R.string.update_release_notes_empty)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismiss) {
+                    Text(getString(android.R.string.cancel))
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = onDownload) {
+                    Text(getString(R.string.update_download))
+                }
+            },
+        )
     }
 
     @Composable
@@ -584,7 +647,8 @@ class SettingsActivity : ComponentActivity() {
                     R.string.update_available_status,
                     displayVersion(info.versionName),
                 )
-                startDownload(info)
+                updateButtonEnabled = true
+                updateConfirmation = info
             }
 
             override fun onFailure(error: Throwable) {

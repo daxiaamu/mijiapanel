@@ -25,6 +25,9 @@
     <string name="update_check_failed">暂时无法检查更新，请稍后重试</string>
     <string name="update_available_status">检测到新版本 %1$s</string>
     <string name="update_download">下载更新</string>
+    <string name="update_dialog_title">发现新版本 %1$s</string>
+    <string name="update_release_notes">更新日志</string>
+    <string name="update_release_notes_empty">该版本未提供更新日志</string>
     <string name="update_confirming_latest">正在确认最新版本…</string>
     <string name="update_confirm_latest_failed">无法确认最新版本，请稍后重试</string>
     <string name="update_install">安装更新</string>

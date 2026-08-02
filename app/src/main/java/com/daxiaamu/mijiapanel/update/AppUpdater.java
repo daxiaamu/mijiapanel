@@ -265,6 +265,9 @@ public final class AppUpdater {
     }
 
     private UpdateInfo parse(JSONObject json) {
+        if (json.optBoolean("prerelease", false) || json.optBoolean("draft", false)) {
+            throw new IllegalArgumentException("Pre-releases are not update candidates");
+        }
         String tag = json.optString("tag");
         String versionName = json.optString("versionName");
         if (versionName.isEmpty()) {
@@ -312,6 +315,9 @@ public final class AppUpdater {
     }
 
     private UpdateInfo parseGitHubRelease(JSONObject json) {
+        if (json.optBoolean("prerelease", false) || json.optBoolean("draft", false)) {
+            throw new IllegalArgumentException("Pre-releases are not update candidates");
+        }
         String tag = json.optString("tag_name");
         int separator = tag.indexOf('-');
         if (separator <= 0 || separator >= tag.length() - 1) {
@@ -359,19 +365,10 @@ public final class AppUpdater {
     }
 
     private String normalizeReleaseNotes(String notes) {
-        StringBuilder result = new StringBuilder();
-        for (String line : notes.split("\\r?\\n")) {
-            String trimmed = line.trim();
-            if (trimmed.isEmpty()) {
-                continue;
-            }
-            if (result.length() > 0) {
-                result.append('\n');
-            }
-            result.append(trimmed.startsWith("- ")
-                    ? "\u2022 " + trimmed.substring(2) : trimmed);
-        }
-        return result.toString();
+        return notes == null ? "" : notes
+                .replace("\r\n", "\n")
+                .replace('\r', '\n')
+                .trim();
     }
 
     private static SharedPreferences preferences(Context context) {
