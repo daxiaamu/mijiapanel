@@ -3,6 +3,7 @@ apply plugin: 'org.jetbrains.kotlin.plugin.compose'
 
 def releaseKeystorePropertiesFile = rootProject.file('.signing/keystore.properties')
 def releaseKeystoreProperties = new Properties()
+def burnInShiftIntervalMs = project.findProperty('burnInShiftIntervalMs')?.toLong() ?: 180000L
 if (releaseKeystorePropertiesFile.exists()) {
     releaseKeystorePropertiesFile.withInputStream {
         releaseKeystoreProperties.load(it)
@@ -24,6 +25,7 @@ android {
         targetSdk 35
         versionCode project.findProperty('versionCodeOverride')?.toInteger() ?: 6
         versionName project.findProperty('versionNameOverride') ?: '1.0.5'
+        buildConfigField 'long', 'BURN_IN_SHIFT_INTERVAL_MS', "${burnInShiftIntervalMs}L"
     }
 
     signingConfigs {

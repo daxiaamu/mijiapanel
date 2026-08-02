@@ -64,8 +64,9 @@ public final class MijiaPanelModule extends XposedModule {
     private static final String PAD_PACKAGE_PREFIX = "com.xiaomi.smarthome.pad.";
     private static final int TARGET_SHORTEST_DP = 600;
     private static final int MIN_DENSITY_DPI = 240;
-    private static final long BURN_IN_SHIFT_INTERVAL_MS = 3L * 60L * 1000L;
+    private static final long BURN_IN_SHIFT_INTERVAL_MS = BuildConfig.BURN_IN_SHIFT_INTERVAL_MS;
     private static final int BURN_IN_SHIFT_STEP_PX = 4;
+    private static final int BURN_IN_SHIFT_RADIUS_STEPS = 4;
     private static final String DEBUG_BURN_IN_STATUS_ACTION =
             "com.daxiaamu.mijiapanel.action.DEBUG_BURN_IN_STATUS";
 
@@ -690,6 +691,8 @@ public final class MijiaPanelModule extends XposedModule {
 
         private final WeakReference<Activity> activityReference;
         private final View content;
+        private final List<int[]> shiftPositions = new ArrayList<>();
+        private int shiftPositionIndex;
         private int currentX;
         private int currentY;
         private long nextShiftElapsedRealtime;
@@ -739,16 +742,9 @@ public final class MijiaPanelModule extends XposedModule {
                 return;
             }
             if (activity.hasWindowFocus()) {
-                int nextX;
-                int nextY;
-                do {
-                    nextX = ThreadLocalRandom.current().nextInt(-2, 3)
-                            * BURN_IN_SHIFT_STEP_PX;
-                    nextY = ThreadLocalRandom.current().nextInt(-2, 3)
-                            * BURN_IN_SHIFT_STEP_PX;
-                } while (nextX == currentX && nextY == currentY);
-                currentX = nextX;
-                currentY = nextY;
+                int[] nextPosition = nextShiftPosition();
+                currentX = nextPosition[0];
+                currentY = nextPosition[1];
                 content.animate()
                         .translationX(currentX)
                         .translationY(currentY)
@@ -758,6 +754,44 @@ public final class MijiaPanelModule extends XposedModule {
             } else {
                 scheduleNext("Burn-in shift skipped because the window has no focus");
             }
+        }
+
+        private int[] nextShiftPosition() {
+            if (shiftPositionIndex >= shiftPositions.size()) {
+                refillShiftPositions();
+            }
+            return shiftPositions.get(shiftPositionIndex++);
+        }
+
+        private void refillShiftPositions() {
+            shiftPositions.clear();
+            for (int xStep = -BURN_IN_SHIFT_RADIUS_STEPS;
+                    xStep <= BURN_IN_SHIFT_RADIUS_STEPS;
+                    xStep++) {
+                for (int yStep = -BURN_IN_SHIFT_RADIUS_STEPS;
+                        yStep <= BURN_IN_SHIFT_RADIUS_STEPS;
+                        yStep++) {
+                    shiftPositions.add(new int[]{
+                            xStep * BURN_IN_SHIFT_STEP_PX,
+                            yStep * BURN_IN_SHIFT_STEP_PX
+                    });
+                }
+            }
+            ThreadLocalRandom random = ThreadLocalRandom.current();
+            for (int index = shiftPositions.size() - 1; index > 0; index--) {
+                int swapIndex = random.nextInt(index + 1);
+                int[] temporary = shiftPositions.get(index);
+                shiftPositions.set(index, shiftPositions.get(swapIndex));
+                shiftPositions.set(swapIndex, temporary);
+            }
+            if (shiftPositions.size() > 1
+                    && shiftPositions.get(0)[0] == currentX
+                    && shiftPositions.get(0)[1] == currentY) {
+                int[] first = shiftPositions.get(0);
+                shiftPositions.set(0, shiftPositions.get(1));
+                shiftPositions.set(1, first);
+            }
+            shiftPositionIndex = 0;
         }
 
         private void scheduleNext(String event) {
