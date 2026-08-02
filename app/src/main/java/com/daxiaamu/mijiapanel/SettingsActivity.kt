@@ -14,15 +14,26 @@ import android.os.Looper
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -86,6 +97,9 @@ class SettingsActivity : ComponentActivity() {
         BrightnessSettings.DEFAULT_BRIGHTNESS_PERCENT,
     )
     private var brightnessDragging by mutableStateOf(false)
+    private var burnInProtectionEnabled by mutableStateOf(
+        BrightnessSettings.DEFAULT_BURN_IN_PROTECTION,
+    )
     private var remotePreferencesReady by mutableStateOf(false)
     private var launcherIconVisible by mutableStateOf(true)
     private var showOpenSourceLicenses by mutableStateOf(false)
@@ -167,95 +181,137 @@ class SettingsActivity : ComponentActivity() {
                     )
                 }
                 item {
-                    val controlColor = if (brightnessLocked && remotePreferencesReady) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                    AnimatedVisibility(
+                        visible = brightnessLocked,
+                        enter = fadeIn(tween(180)) +
+                            expandVertically(tween(220)) +
+                            slideInVertically(tween(220)) { -it / 4 },
+                        exit = fadeOut(tween(140)) +
+                            shrinkVertically(tween(180)) +
+                            slideOutVertically(tween(180)) { -it / 4 },
                     ) {
-                        Text(
-                            text = getString(R.string.panel_brightness),
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = controlColor,
-                        )
-                        Text(
-                            text = getString(R.string.brightness_percent, brightnessPercent),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = controlColor,
-                        )
-                    }
-                    BoxWithConstraints(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp),
-                    ) {
-                        if (brightnessDragging) {
-                            val indicatorWidth = 184.dp
-                            val positionFraction =
-                                ((brightnessPercent - 1) / 99f).coerceIn(0f, 1f)
-                            val thumbCenter = 16.dp +
-                                (maxWidth - 32.dp) * positionFraction
-                            val indicatorOffset = (thumbCenter - indicatorWidth / 2f)
-                                .coerceIn(0.dp, maxWidth - indicatorWidth)
-                            val density = LocalDensity.current
-                            Popup(
-                                alignment = Alignment.TopStart,
-                                offset = with(density) {
-                                    IntOffset(
-                                        indicatorOffset.roundToPx(),
-                                        (-104).dp.roundToPx(),
-                                    )
-                                },
-                                properties = PopupProperties(
-                                    focusable = false,
-                                    clippingEnabled = false,
-                                ),
-                            ) {
-                                Text(
-                                    text = getString(
-                                        R.string.brightness_percent,
-                                        brightnessPercent,
-                                    ),
-                                    modifier = Modifier.width(indicatorWidth),
-                                    style = MaterialTheme.typography.displayLarge.copy(
-                                        shadow = Shadow(
-                                            color = MaterialTheme.colorScheme.surface,
-                                            offset = Offset.Zero,
-                                            blurRadius = 14f,
-                                        ),
-                                    ),
-                                    fontWeight = FontWeight.SemiBold,
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    color = controlColor,
-                                )
-                            }
-                        }
-                        Slider(
-                            value = brightnessPercent.toFloat(),
-                            onValueChange = {
-                                brightnessDragging = true
-                                setBrightness(it.roundToInt(), commit = false)
-                            },
-                            onValueChangeFinished = {
-                                setBrightness(brightnessPercent, commit = true)
-                                brightnessDragging = false
-                            },
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(52.dp)
-                                .align(Alignment.BottomCenter),
-                            enabled = brightnessLocked && remotePreferencesReady,
-                            valueRange = 1f..100f,
-                        )
+                                .height(IntrinsicSize.Min)
+                                .padding(start = 20.dp, top = 8.dp, bottom = 8.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(3.dp)
+                                    .fillMaxHeight()
+                                    .background(
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                                    ),
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 12.dp),
+                            ) {
+                                val controlColor = if (remotePreferencesReady) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = getString(R.string.panel_brightness),
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = controlColor,
+                                    )
+                                    Text(
+                                        text = getString(
+                                            R.string.brightness_percent,
+                                            brightnessPercent,
+                                        ),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = controlColor,
+                                    )
+                                }
+                                BoxWithConstraints(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(52.dp),
+                                ) {
+                                    if (brightnessDragging) {
+                                        val indicatorWidth = 184.dp
+                                        val positionFraction =
+                                            ((brightnessPercent - 1) / 99f).coerceIn(0f, 1f)
+                                        val thumbCenter = 16.dp +
+                                            (maxWidth - 32.dp) * positionFraction
+                                        val indicatorOffset =
+                                            (thumbCenter - indicatorWidth / 2f)
+                                                .coerceIn(0.dp, maxWidth - indicatorWidth)
+                                        val density = LocalDensity.current
+                                        Popup(
+                                            alignment = Alignment.TopStart,
+                                            offset = with(density) {
+                                                IntOffset(
+                                                    indicatorOffset.roundToPx(),
+                                                    (-104).dp.roundToPx(),
+                                                )
+                                            },
+                                            properties = PopupProperties(
+                                                focusable = false,
+                                                clippingEnabled = false,
+                                            ),
+                                        ) {
+                                            Text(
+                                                text = getString(
+                                                    R.string.brightness_percent,
+                                                    brightnessPercent,
+                                                ),
+                                                modifier = Modifier.width(indicatorWidth),
+                                                style = MaterialTheme.typography.displayLarge.copy(
+                                                    shadow = Shadow(
+                                                        color = MaterialTheme.colorScheme.surface,
+                                                        offset = Offset.Zero,
+                                                        blurRadius = 14f,
+                                                    ),
+                                                ),
+                                                fontWeight = FontWeight.SemiBold,
+                                                textAlign = TextAlign.Center,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                color = controlColor,
+                                            )
+                                        }
+                                    }
+                                    Slider(
+                                        value = brightnessPercent.toFloat(),
+                                        onValueChange = {
+                                            brightnessDragging = true
+                                            setBrightness(it.roundToInt(), commit = false)
+                                        },
+                                        onValueChangeFinished = {
+                                            setBrightness(brightnessPercent, commit = true)
+                                            brightnessDragging = false
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(52.dp)
+                                            .align(Alignment.BottomCenter),
+                                        enabled = remotePreferencesReady,
+                                        valueRange = 1f..100f,
+                                    )
+                                }
+                            }
+                        }
                     }
+                }
+                item {
+                    SwitchSetting(
+                        title = getString(R.string.burn_in_protection),
+                        summary = getString(R.string.burn_in_protection_summary),
+                        checked = burnInProtectionEnabled,
+                        enabled = remotePreferencesReady,
+                        onCheckedChange = { updateBurnInProtection(it) },
+                    )
                 }
 
                 item { SectionDivider() }
@@ -506,6 +562,7 @@ class SettingsActivity : ComponentActivity() {
 
     private fun updateBrightnessLock(locked: Boolean) {
         brightnessLocked = locked
+        if (!locked) brightnessDragging = false
         preferences?.edit()
             ?.putBoolean(BrightnessSettings.LOCK_BRIGHTNESS, locked)
             ?.commit()
@@ -520,6 +577,13 @@ class SettingsActivity : ComponentActivity() {
         if (commit) editor.commit() else editor.apply()
     }
 
+    private fun updateBurnInProtection(enabled: Boolean) {
+        burnInProtectionEnabled = enabled
+        preferences?.edit()
+            ?.putBoolean(BrightnessSettings.BURN_IN_PROTECTION, enabled)
+            ?.commit()
+    }
+
     private fun loadRemotePreferences() {
         val remote = moduleApplication.getRemotePreferences(
             BrightnessSettings.PREFERENCES,
@@ -532,6 +596,10 @@ class SettingsActivity : ComponentActivity() {
                 BrightnessSettings.BRIGHTNESS_PERCENT,
                 BrightnessSettings.DEFAULT_BRIGHTNESS_PERCENT,
             ),
+        )
+        burnInProtectionEnabled = remote.getBoolean(
+            BrightnessSettings.BURN_IN_PROTECTION,
+            BrightnessSettings.DEFAULT_BURN_IN_PROTECTION,
         )
         remotePreferencesReady = true
     }

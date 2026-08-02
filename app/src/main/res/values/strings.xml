@@ -3,12 +3,14 @@
     <string name="app_name">米家中控模式</string>
     <string name="module_description">使米家APP在手机上也可以显示中控入口和开启中控模式</string>
     <string name="settings_title">MijiaPanel</string>
-    <string name="settings_description">米家中控模式设置</string>
+    <string name="settings_description">米家中控模式</string>
     <string name="display_settings">显示设置</string>
     <string name="lock_brightness">锁定亮度</string>
-    <string name="lock_brightness_summary">关闭时跟随系统亮度；开启后使用下方设定的亮度。</string>
+    <string name="lock_brightness_summary">关闭时跟随系统亮度，开启时则锁定为用户设置的亮度</string>
     <string name="panel_brightness">中控界面亮度</string>
     <string name="brightness_percent">%1$d%%</string>
+    <string name="burn_in_protection">防烧屏位移</string>
+    <string name="burn_in_protection_summary">每隔3分钟轻微随机移动中控界面，能一定程度缓解烧屏</string>
 
     <string name="app_settings">应用设置</string>
     <string name="show_launcher_icon">显示桌面图标</string>

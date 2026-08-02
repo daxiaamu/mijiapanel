@@ -1,13 +1,17 @@
 package com.daxiaamu.mijiapanel;
 
 import android.app.Activity;
+import android.app.Application;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.graphics.Color;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -24,6 +28,7 @@ import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.libxposed.api.XposedInterface;
@@ -59,21 +64,53 @@ public final class MijiaPanelModule extends XposedModule {
     private static final String PAD_PACKAGE_PREFIX = "com.xiaomi.smarthome.pad.";
     private static final int TARGET_SHORTEST_DP = 600;
     private static final int MIN_DENSITY_DPI = 240;
+    private static final long BURN_IN_SHIFT_INTERVAL_MS = 3L * 60L * 1000L;
+    private static final int BURN_IN_SHIFT_STEP_PX = 4;
+    private static final String DEBUG_BURN_IN_STATUS_ACTION =
+            "com.daxiaamu.mijiapanel.action.DEBUG_BURN_IN_STATUS";
 
     private volatile Context targetContext;
     private volatile CompatibilityProfile compatibilityProfile = CompatibilityProfile.UNKNOWN;
     private volatile SharedPreferences brightnessPreferences;
     private volatile WeakReference<Activity> activePadActivity = new WeakReference<>(null);
+    private final Object burnInControllerLock = new Object();
+    private BurnInShiftController burnInController;
+    private final AtomicBoolean debugReceiverRegistered = new AtomicBoolean();
     private final AtomicBoolean compatibilityHooksInstalled = new AtomicBoolean();
+    private final BroadcastReceiver debugReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (!DEBUG_BURN_IN_STATUS_ACTION.equals(intent.getAction())) {
+                return;
+            }
+            String status;
+            synchronized (burnInControllerLock) {
+                status = burnInController == null
+                        ? "burn-in active=false"
+                        : burnInController.debugStatus();
+            }
+            Log.i(TAG, status);
+            setResultData(status);
+        }
+    };
     private final SharedPreferences.OnSharedPreferenceChangeListener brightnessChangeListener =
             (preferences, key) -> {
-                if (!BrightnessSettings.LOCK_BRIGHTNESS.equals(key)
-                        && !BrightnessSettings.BRIGHTNESS_PERCENT.equals(key)) {
+                boolean brightnessChanged = BrightnessSettings.LOCK_BRIGHTNESS.equals(key)
+                        || BrightnessSettings.BRIGHTNESS_PERCENT.equals(key);
+                boolean burnInChanged = BrightnessSettings.BURN_IN_PROTECTION.equals(key);
+                if (!brightnessChanged && !burnInChanged) {
                     return;
                 }
                 Activity activity = activePadActivity.get();
                 if (activity != null && !activity.isFinishing() && !activity.isDestroyed()) {
-                    activity.runOnUiThread(() -> applyBrightnessSetting(activity));
+                    activity.runOnUiThread(() -> {
+                        if (brightnessChanged) {
+                            applyBrightnessSetting(activity);
+                        }
+                        if (burnInChanged) {
+                            configureBurnInProtection(activity);
+                        }
+                    });
                 }
             };
 
@@ -107,6 +144,7 @@ public final class MijiaPanelModule extends XposedModule {
                     .intercept(chain -> {
                         Context base = (Context) chain.getArg(0);
                         targetContext = base;
+                        registerDebugReceiver(base);
                         ensureCompatibilityHooks(loader, base);
                         // Never replace the Application context. A process-wide
                         // tablet override breaks the normal page after pad-mode exit.
@@ -114,6 +152,37 @@ public final class MijiaPanelModule extends XposedModule {
                     });
         } catch (Throwable error) {
             logFailure("Unable to hook SHApplication.attachBaseContext", error);
+        }
+    }
+
+    private void registerDebugReceiver(Context context) {
+        if (!isMainProcess() || !debugReceiverRegistered.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            IntentFilter filter = new IntentFilter(DEBUG_BURN_IN_STATUS_ACTION);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(debugReceiver, filter, Context.RECEIVER_EXPORTED);
+            } else {
+                context.registerReceiver(debugReceiver, filter);
+            }
+        } catch (Throwable error) {
+            debugReceiverRegistered.set(false);
+            logFailure("Unable to register burn-in debug receiver", error);
+        }
+    }
+
+    private boolean isMainProcess() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                return TARGET_PACKAGE.equals(Application.getProcessName());
+            }
+            Class<?> activityThread = Class.forName("android.app.ActivityThread");
+            Method currentProcessName = activityThread.getDeclaredMethod("currentProcessName");
+            currentProcessName.setAccessible(true);
+            return TARGET_PACKAGE.equals(currentProcessName.invoke(null));
+        } catch (Throwable error) {
+            return false;
         }
     }
 
@@ -442,6 +511,34 @@ public final class MijiaPanelModule extends XposedModule {
                         }
                         return result;
                     });
+
+            Method onPause = Activity.class.getDeclaredMethod("onPause");
+            onPause.setAccessible(true);
+            hook(onPause)
+                    .setId("mijia-panel.pad-burn-in-on-pause")
+                    .setPriority(XposedInterface.PRIORITY_LOWEST)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        Activity activity = (Activity) chain.getThisObject();
+                        if (padActivity.isInstance(activity)) {
+                            stopBurnInProtection(activity);
+                        }
+                        return result;
+                    });
+
+            Method onDestroy = Activity.class.getDeclaredMethod("onDestroy");
+            onDestroy.setAccessible(true);
+            hook(onDestroy)
+                    .setId("mijia-panel.pad-burn-in-on-destroy")
+                    .setPriority(XposedInterface.PRIORITY_LOWEST)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        Activity activity = (Activity) chain.getThisObject();
+                        if (padActivity.isInstance(activity)) {
+                            stopBurnInProtection(activity);
+                        }
+                        return result;
+                    });
         } catch (Throwable error) {
             logFailure("Unable to install pad system-bar hooks", error);
         }
@@ -451,6 +548,53 @@ public final class MijiaPanelModule extends XposedModule {
         activePadActivity = new WeakReference<>(activity);
         hideSystemBars(activity);
         applyBrightnessSetting(activity);
+        configureBurnInProtection(activity);
+    }
+
+    private void configureBurnInProtection(Activity activity) {
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
+            return;
+        }
+        boolean enabled = BrightnessSettings.DEFAULT_BURN_IN_PROTECTION;
+        try {
+            enabled = getBrightnessPreferences().getBoolean(
+                    BrightnessSettings.BURN_IN_PROTECTION,
+                    BrightnessSettings.DEFAULT_BURN_IN_PROTECTION);
+        } catch (Throwable error) {
+            logFailure("Unable to read burn-in protection setting", error);
+        }
+        synchronized (burnInControllerLock) {
+            if (!enabled) {
+                if (burnInController != null) {
+                    burnInController.stop();
+                    burnInController = null;
+                }
+                return;
+            }
+            if (burnInController != null && burnInController.isFor(activity)) {
+                return;
+            }
+            if (burnInController != null) {
+                burnInController.stop();
+            }
+            View content = activity.findViewById(android.R.id.content);
+            if (content != null) {
+                burnInController = new BurnInShiftController(activity, content);
+                burnInController.start();
+            }
+        }
+    }
+
+    private void stopBurnInProtection(Activity activity) {
+        synchronized (burnInControllerLock) {
+            if (burnInController != null && burnInController.isFor(activity)) {
+                burnInController.stop();
+                burnInController = null;
+            }
+        }
+        if (activePadActivity.get() == activity) {
+            activePadActivity = new WeakReference<>(null);
+        }
     }
 
     private void applyBrightnessSetting(Activity activity) {
@@ -538,6 +682,90 @@ public final class MijiaPanelModule extends XposedModule {
         private static final int FLAG_FULLSCREEN = 0x00000400;
 
         private WindowManagerFlags() {
+        }
+    }
+
+    private static final class BurnInShiftController implements Runnable {
+        private static final long SHIFT_ANIMATION_MS = 800L;
+
+        private final WeakReference<Activity> activityReference;
+        private final View content;
+        private int currentX;
+        private int currentY;
+        private long nextShiftElapsedRealtime;
+        private boolean stopped;
+
+        BurnInShiftController(Activity activity, View content) {
+            activityReference = new WeakReference<>(activity);
+            this.content = content;
+        }
+
+        void start() {
+            content.removeCallbacks(this);
+            scheduleNext("Burn-in timer started");
+        }
+
+        boolean isFor(Activity activity) {
+            return activityReference.get() == activity;
+        }
+
+        void stop() {
+            stopped = true;
+            content.removeCallbacks(this);
+            content.animate().cancel();
+            content.setTranslationX(0.0f);
+            content.setTranslationY(0.0f);
+            nextShiftElapsedRealtime = 0L;
+            Log.i(TAG, "Burn-in timer stopped");
+        }
+
+        String debugStatus() {
+            long remainingMs = Math.max(
+                    0L,
+                    nextShiftElapsedRealtime - SystemClock.elapsedRealtime());
+            long remainingSeconds = (remainingMs + 999L) / 1_000L;
+            return "burn-in active=" + !stopped
+                    + ", remainingSeconds=" + remainingSeconds
+                    + ", offsetX=" + currentX
+                    + ", offsetY=" + currentY
+                    + ", windowFocused=" + content.hasWindowFocus();
+        }
+
+        @Override
+        public void run() {
+            Activity activity = activityReference.get();
+            if (stopped || activity == null || activity.isFinishing() || activity.isDestroyed()) {
+                stop();
+                return;
+            }
+            if (activity.hasWindowFocus()) {
+                int nextX;
+                int nextY;
+                do {
+                    nextX = ThreadLocalRandom.current().nextInt(-2, 3)
+                            * BURN_IN_SHIFT_STEP_PX;
+                    nextY = ThreadLocalRandom.current().nextInt(-2, 3)
+                            * BURN_IN_SHIFT_STEP_PX;
+                } while (nextX == currentX && nextY == currentY);
+                currentX = nextX;
+                currentY = nextY;
+                content.animate()
+                        .translationX(currentX)
+                        .translationY(currentY)
+                        .setDuration(SHIFT_ANIMATION_MS)
+                        .start();
+                scheduleNext("Burn-in shifted to (" + currentX + ", " + currentY + ")");
+            } else {
+                scheduleNext("Burn-in shift skipped because the window has no focus");
+            }
+        }
+
+        private void scheduleNext(String event) {
+            nextShiftElapsedRealtime = SystemClock.elapsedRealtime()
+                    + BURN_IN_SHIFT_INTERVAL_MS;
+            content.postDelayed(this, BURN_IN_SHIFT_INTERVAL_MS);
+            Log.i(TAG, event + "; next attempt in "
+                    + (BURN_IN_SHIFT_INTERVAL_MS / 1_000L) + "s");
         }
     }
 
