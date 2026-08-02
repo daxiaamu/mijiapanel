@@ -31,32 +31,14 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v5
 
-      - name: Restore release signing configuration
-        shell: bash
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          mkdir -p .signing
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > .signing/daxiaamu-release.jks
-          {
-            printf 'storeFile=daxiaamu-release.jks\n'
-            printf 'storePassword=%s\n' "$ANDROID_KEYSTORE_PASSWORD"
-            printf 'keyAlias=%s\n' "$ANDROID_KEY_ALIAS"
-            printf 'keyPassword=%s\n' "$ANDROID_KEY_PASSWORD"
-          } > .signing/keystore.properties
-
-      - name: Build signed universal APK
+      - name: Build unsigned universal APK
         shell: bash
         run: |
           set -euo pipefail
           chmod +x gradlew
-          ./gradlew :app:assembleRelease --no-daemon
+          ./gradlew :app:assembleRelease -PunsignedRelease --no-daemon
 
-      - name: Verify and name artifact
+      - name: Verify unsigned APK and name artifact
         id: artifact
         shell: bash
         run: |
@@ -70,9 +52,12 @@ jobs:
           fi
 
           apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
-          "$apksigner" verify --verbose "$apk_path"
+          if "$apksigner" verify "$apk_path"; then
+            echo 'Expected an unsigned APK, but signature verification succeeded' >&2
+            exit 1
+          fi
 
-          artifact_name="MijiaPanel-${version_name}-presence-universal"
+          artifact_name="MijiaPanel-${version_name}-presence-universal-unsigned"
           mkdir -p build/presence-artifact
           cp "$apk_path" "build/presence-artifact/${artifact_name}.apk"
           printf 'name=%s\n' "$artifact_name" >> "$GITHUB_OUTPUT"
