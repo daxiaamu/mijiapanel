@@ -11,6 +11,8 @@
     <string name="brightness_percent">%1$d%%</string>
     <string name="burn_in_protection">防烧屏位移</string>
     <string name="burn_in_protection_summary">每隔3分钟轻微随机移动中控界面，能一定程度缓解烧屏</string>
+    <string name="draw_in_display_cutout">不避让水滴屏</string>
+    <string name="draw_in_display_cutout_summary">允许中控界面延伸至水滴、刘海等屏幕开孔区域</string>
 
     <string name="app_settings">应用设置</string>
     <string name="show_launcher_icon">显示桌面图标</string>

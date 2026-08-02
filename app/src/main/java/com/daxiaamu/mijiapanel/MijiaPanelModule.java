@@ -20,6 +20,7 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.view.WindowManager;
 import android.widget.TextView;
 
 import java.lang.reflect.Method;
@@ -99,7 +100,9 @@ public final class MijiaPanelModule extends XposedModule {
                 boolean brightnessChanged = BrightnessSettings.LOCK_BRIGHTNESS.equals(key)
                         || BrightnessSettings.BRIGHTNESS_PERCENT.equals(key);
                 boolean burnInChanged = BrightnessSettings.BURN_IN_PROTECTION.equals(key);
-                if (!brightnessChanged && !burnInChanged) {
+                boolean displayCutoutChanged =
+                        BrightnessSettings.DRAW_IN_DISPLAY_CUTOUT.equals(key);
+                if (!brightnessChanged && !burnInChanged && !displayCutoutChanged) {
                     return;
                 }
                 Activity activity = activePadActivity.get();
@@ -110,6 +113,9 @@ public final class MijiaPanelModule extends XposedModule {
                         }
                         if (burnInChanged) {
                             configureBurnInProtection(activity);
+                        }
+                        if (displayCutoutChanged) {
+                            applyDisplayCutoutPolicy(activity);
                         }
                     });
                 }
@@ -547,9 +553,39 @@ public final class MijiaPanelModule extends XposedModule {
 
     private void applyPadWindowPolicy(Activity activity) {
         activePadActivity = new WeakReference<>(activity);
+        applyDisplayCutoutPolicy(activity);
         hideSystemBars(activity);
         applyBrightnessSetting(activity);
         configureBurnInProtection(activity);
+    }
+
+    private void applyDisplayCutoutPolicy(Activity activity) {
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()
+                || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            return;
+        }
+        boolean enabled = BrightnessSettings.DEFAULT_DRAW_IN_DISPLAY_CUTOUT;
+        try {
+            enabled = getBrightnessPreferences().getBoolean(
+                    BrightnessSettings.DRAW_IN_DISPLAY_CUTOUT,
+                    BrightnessSettings.DEFAULT_DRAW_IN_DISPLAY_CUTOUT);
+        } catch (Throwable error) {
+            logFailure("Unable to read display-cutout setting", error);
+        }
+        Window window = activity.getWindow();
+        WindowManager.LayoutParams attributes = window.getAttributes();
+        int desiredMode;
+        if (!enabled) {
+            desiredMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            desiredMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+        } else {
+            desiredMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        }
+        if (attributes.layoutInDisplayCutoutMode != desiredMode) {
+            attributes.layoutInDisplayCutoutMode = desiredMode;
+            window.setAttributes(attributes);
+        }
     }
 
     private void configureBurnInProtection(Activity activity) {
