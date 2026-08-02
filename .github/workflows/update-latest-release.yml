@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   update-manifest:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out main
