@@ -104,6 +104,9 @@ class SettingsActivity : ComponentActivity() {
     private var burnInProtectionEnabled by mutableStateOf(
         BrightnessSettings.DEFAULT_BURN_IN_PROTECTION,
     )
+    private var drawInDisplayCutoutEnabled by mutableStateOf(
+        BrightnessSettings.DEFAULT_DRAW_IN_DISPLAY_CUTOUT,
+    )
     private var presenceDetectionEnabled by mutableStateOf(
         BrightnessSettings.DEFAULT_PRESENCE_DETECTION,
     )
@@ -355,6 +358,15 @@ class SettingsActivity : ComponentActivity() {
                         checked = burnInProtectionEnabled,
                         enabled = remotePreferencesReady,
                         onCheckedChange = { updateBurnInProtection(it) },
+                    )
+                }
+                item {
+                    SwitchSetting(
+                        title = getString(R.string.draw_in_display_cutout),
+                        summary = getString(R.string.draw_in_display_cutout_summary),
+                        checked = drawInDisplayCutoutEnabled,
+                        enabled = remotePreferencesReady,
+                        onCheckedChange = { updateDrawInDisplayCutout(it) },
                     )
                 }
                 item {
@@ -747,6 +759,13 @@ class SettingsActivity : ComponentActivity() {
             ?.commit()
     }
 
+    private fun updateDrawInDisplayCutout(enabled: Boolean) {
+        drawInDisplayCutoutEnabled = enabled
+        preferences?.edit()
+            ?.putBoolean(BrightnessSettings.DRAW_IN_DISPLAY_CUTOUT, enabled)
+            ?.commit()
+    }
+
     private fun updatePresenceDetection(enabled: Boolean) {
         if (enabled && !hasCameraPermission()) {
             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
@@ -842,6 +861,10 @@ class SettingsActivity : ComponentActivity() {
         burnInProtectionEnabled = remote.getBoolean(
             BrightnessSettings.BURN_IN_PROTECTION,
             BrightnessSettings.DEFAULT_BURN_IN_PROTECTION,
+        )
+        drawInDisplayCutoutEnabled = remote.getBoolean(
+            BrightnessSettings.DRAW_IN_DISPLAY_CUTOUT,
+            BrightnessSettings.DEFAULT_DRAW_IN_DISPLAY_CUTOUT,
         )
         presenceDetectionEnabled = remote.getBoolean(
             BrightnessSettings.PRESENCE_DETECTION,
