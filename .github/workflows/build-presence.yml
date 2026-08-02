@@ -1,0 +1,87 @@
+name: Build presence detection APK
+
+on:
+  push:
+    branches:
+      - codex/presence-detection
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: presence-detection-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out presence detection branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || 'codex/presence-detection' }}
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Restore release signing configuration
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mkdir -p .signing
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > .signing/daxiaamu-release.jks
+          {
+            printf 'storeFile=daxiaamu-release.jks\n'
+            printf 'storePassword=%s\n' "$ANDROID_KEYSTORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$ANDROID_KEY_ALIAS"
+            printf 'keyPassword=%s\n' "$ANDROID_KEY_PASSWORD"
+          } > .signing/keystore.properties
+
+      - name: Build signed universal APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --no-daemon
+
+      - name: Verify and name artifact
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata='app/build/outputs/apk/release/output-metadata.json'
+          apk_path="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          version_name="$(jq -r '.elements[0].versionName' "$metadata")"
+          if [[ -z "$apk_path" || -z "$version_name" || "$version_name" == 'null' ]]; then
+            echo 'Unable to locate the release APK or version name' >&2
+            exit 1
+          fi
+
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          "$apksigner" verify --verbose "$apk_path"
+
+          artifact_name="MijiaPanel-${version_name}-presence-universal"
+          mkdir -p build/presence-artifact
+          cp "$apk_path" "build/presence-artifact/${artifact_name}.apk"
+          printf 'name=%s\n' "$artifact_name" >> "$GITHUB_OUTPUT"
+          printf 'path=%s\n' "build/presence-artifact/${artifact_name}.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload universal APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: ${{ steps.artifact.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
