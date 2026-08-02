@@ -19,6 +19,7 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.camera.core.CameraSelector;
@@ -62,6 +63,8 @@ public final class PresenceDetectionService extends LifecycleService
     private static final int LIGHTING_SHIFT_THRESHOLD = 6;
     private static final float LIGHTING_CHANGED_RATIO = 0.75f;
     private static final float LIGHTING_DIRECTION_RATIO = 0.90f;
+    private static final long FACE_DETECTOR_RETRY_MS = 5_000L;
+    private static final String TAG = "MijiaPanelPresence";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService analysisExecutor = Executors.newSingleThreadExecutor();
@@ -131,6 +134,7 @@ public final class PresenceDetectionService extends LifecycleService
     private ProcessCameraProvider cameraProvider;
     private ImageAnalysis imageAnalysis;
     private FaceDetector faceDetector;
+    private long lastFaceDetectorInitAttemptElapsed;
     private boolean cameraStarting;
     private boolean cameraBound;
     private int cameraGeneration;
@@ -148,15 +152,6 @@ public final class PresenceDetectionService extends LifecycleService
         super.onCreate();
         application = (MijiaPanelApplication) getApplication();
         application.addServiceListener(this);
-        faceDetector = FaceDetection.getClient(
-                new FaceDetectorOptions.Builder()
-                        .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-                        .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
-                        .setContourMode(FaceDetectorOptions.CONTOUR_MODE_NONE)
-                        .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
-                        .setMinFaceSize(0.1f)
-                        .enableTracking()
-                        .build());
         startCameraForeground();
         IntentFilter screenFilter = new IntentFilter(Intent.ACTION_SCREEN_OFF);
         screenFilter.addAction(Intent.ACTION_SCREEN_ON);
@@ -445,8 +440,36 @@ public final class PresenceDetectionService extends LifecycleService
         }
         application.removeServiceListener(this);
         analysisExecutor.shutdownNow();
-        faceDetector.close();
+        if (faceDetector != null) {
+            faceDetector.close();
+        }
         super.onDestroy();
+    }
+
+    private FaceDetector getOrCreateFaceDetector() {
+        if (faceDetector != null) {
+            return faceDetector;
+        }
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastFaceDetectorInitAttemptElapsed < FACE_DETECTOR_RETRY_MS) {
+            return null;
+        }
+        lastFaceDetectorInitAttemptElapsed = now;
+        try {
+            faceDetector = FaceDetection.getClient(
+                    new FaceDetectorOptions.Builder()
+                            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                            .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
+                            .setContourMode(FaceDetectorOptions.CONTOUR_MODE_NONE)
+                            .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
+                            .setMinFaceSize(0.1f)
+                            .enableTracking()
+                            .build());
+            return faceDetector;
+        } catch (Throwable error) {
+            Log.w(TAG, "Face detector initialization failed; motion detection remains active", error);
+            return null;
+        }
     }
 
     private final class PresenceAnalyzer implements ImageAnalysis.Analyzer {
@@ -474,11 +497,17 @@ public final class PresenceDetectionService extends LifecycleService
                 if (mediaImage != null
                         && now - lastFaceStartedElapsed >= FACE_INTERVAL_MS
                         && faceDetectionRunning.compareAndSet(false, true)) {
+                    FaceDetector detector = getOrCreateFaceDetector();
+                    if (detector == null) {
+                        faceDetectionRunning.set(false);
+                        imageProxy.close();
+                        return;
+                    }
                     lastFaceStartedElapsed = now;
                     InputImage input = InputImage.fromMediaImage(
                             mediaImage,
                             imageProxy.getImageInfo().getRotationDegrees());
-                    faceDetector.process(input)
+                    detector.process(input)
                             .addOnSuccessListener(faces -> {
                                 if (!faces.isEmpty()) {
                                     markPresence(true);
