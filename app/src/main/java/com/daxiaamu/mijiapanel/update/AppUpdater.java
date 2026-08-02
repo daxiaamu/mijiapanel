@@ -265,9 +265,6 @@ public final class AppUpdater {
     }
 
     private UpdateInfo parse(JSONObject json) {
-        if (json.optBoolean("prerelease", false) || json.optBoolean("draft", false)) {
-            throw new IllegalArgumentException("Pre-releases are not update candidates");
-        }
         String tag = json.optString("tag");
         String versionName = json.optString("versionName");
         if (versionName.isEmpty()) {
@@ -315,9 +312,6 @@ public final class AppUpdater {
     }
 
     private UpdateInfo parseGitHubRelease(JSONObject json) {
-        if (json.optBoolean("prerelease", false) || json.optBoolean("draft", false)) {
-            throw new IllegalArgumentException("Pre-releases are not update candidates");
-        }
         String tag = json.optString("tag_name");
         int separator = tag.indexOf('-');
         if (separator <= 0 || separator >= tag.length() - 1) {
