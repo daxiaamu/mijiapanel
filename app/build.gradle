@@ -4,6 +4,8 @@ apply plugin: 'org.jetbrains.kotlin.plugin.compose'
 def releaseKeystorePropertiesFile = rootProject.file('.signing/keystore.properties')
 def releaseKeystoreProperties = new Properties()
 def burnInShiftIntervalMs = project.findProperty('burnInShiftIntervalMs')?.toLong() ?: 180000L
+def releaseSigningEnabled = releaseKeystorePropertiesFile.exists() &&
+        !project.hasProperty('unsignedRelease')
 if (releaseKeystorePropertiesFile.exists()) {
     releaseKeystorePropertiesFile.withInputStream {
         releaseKeystoreProperties.load(it)
@@ -55,7 +57,9 @@ android {
         release {
             minifyEnabled false
             shrinkResources false
-            signingConfig signingConfigs.release
+            if (releaseSigningEnabled) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 
