@@ -46,7 +46,11 @@ jobs:
 
           version_code="${BASH_REMATCH[1]}"
           version_name="${BASH_REMATCH[2]}"
-          release_json="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json name,body,url,assets)"
+          release_json="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json name,body,url,assets,isPrerelease,isDraft)"
+          if [[ "$(jq -r '.isPrerelease or .isDraft' <<<"$release_json")" == "true" ]]; then
+            echo "Refusing to publish a draft or pre-release to latest-release.json" >&2
+            exit 1
+          fi
           release_name="$(jq -r '.name // empty' <<<"$release_json")"
           release_notes="$(jq -r '.body // ""' <<<"$release_json")"
           release_url="$(jq -r '.url' <<<"$release_json")"
