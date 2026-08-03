@@ -47,7 +47,7 @@
 
     <string name="app_update">应用更新</string>
     <string name="current_version">当前版本：%1$s</string>
-    <string name="update_auto_check_summary">每次打开设置时自动检查更新</string>
+    <string name="update_auto_check_summary">点击按钮检查更新</string>
     <string name="update_checking">正在检查更新…</string>
     <string name="update_check_action">检查更新</string>
     <string name="update_already_latest">已是最新版本（%1$s）</string>
