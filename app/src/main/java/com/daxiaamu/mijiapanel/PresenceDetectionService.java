@@ -37,6 +37,10 @@ import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.face.FaceDetection;
 import com.google.mlkit.vision.face.FaceDetector;
 import com.google.mlkit.vision.face.FaceDetectorOptions;
+import com.google.mlkit.vision.pose.PoseDetection;
+import com.google.mlkit.vision.pose.PoseDetector;
+import com.google.mlkit.vision.pose.PoseLandmark;
+import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions;
 
 import java.nio.ByteBuffer;
 import java.util.UUID;
@@ -53,22 +57,28 @@ public final class PresenceDetectionService extends LifecycleService
     private static final String CHANNEL_ID = "presence_detection";
     private static final int NOTIFICATION_ID = 2101;
     private static final long FACE_INTERVAL_MS = 1_000L;
-    private static final long PRESENCE_GRACE_MS = 30_000L;
+    private static final long POSE_INTERVAL_MS = 1_500L;
     private static final long STATE_TICK_MS = 2_000L;
     private static final long SCREEN_OFF_MOTION_GUARD_MS = 3_000L;
     private static final long PANEL_SCREEN_OFF_HANDOFF_MS = 5_000L;
     private static final int MOTION_REQUIRED_FRAMES = 2;
+    // Retained for possible fallback use, but excluded from presence decisions now that
+    // face and pose detection cover the dedicated-panel scenario without lighting noise.
+    private static final boolean LUMA_MOTION_DETECTION_ENABLED = false;
     private static final int LUMA_DIFFERENCE_THRESHOLD = 18;
     private static final float MOTION_SAMPLE_RATIO = 0.025f;
     private static final int LIGHTING_SHIFT_THRESHOLD = 6;
     private static final float LIGHTING_CHANGED_RATIO = 0.75f;
     private static final float LIGHTING_DIRECTION_RATIO = 0.90f;
     private static final long FACE_DETECTOR_RETRY_MS = 5_000L;
+    private static final long POSE_DETECTOR_RETRY_MS = 5_000L;
+    private static final int MIN_CONFIDENT_POSE_LANDMARKS = 5;
+    private static final float MIN_POSE_LANDMARK_CONFIDENCE = 0.5f;
     private static final String TAG = "MijiaPanelPresence";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService analysisExecutor = Executors.newSingleThreadExecutor();
-    private final AtomicBoolean faceDetectionRunning = new AtomicBoolean();
+    private final AtomicBoolean visionDetectionRunning = new AtomicBoolean();
     private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -83,7 +93,15 @@ public final class PresenceDetectionService extends LifecycleService
                     panelScreenOffSession = true;
                 }
             } else if (Intent.ACTION_SCREEN_ON.equals(intent.getAction())) {
+                boolean returningToPanel = panelScreenOffSession || panelActive;
                 panelScreenOffSession = false;
+                if (returningToPanel && cameraBound) {
+                    // Re-arm the complete absence window after a manual/presence wake.
+                    // Otherwise a stale absent state can immediately hand control back
+                    // to Android's timeout or fail to trigger the next explicit sleep.
+                    lastPresenceElapsed = SystemClock.elapsedRealtime();
+                    publishPresence(true);
+                }
             }
             updateCameraState();
         }
@@ -97,6 +115,7 @@ public final class PresenceDetectionService extends LifecycleService
             String receivedToken = intent.getStringExtra(
                     BrightnessSettings.EXTRA_PANEL_STATE_TOKEN);
             if (panelStateToken == null || !panelStateToken.equals(receivedToken)) {
+                Log.w(TAG, "Ignored panel state because its token does not match");
                 return;
             }
             boolean nextPanelActive = intent.getBooleanExtra(
@@ -106,6 +125,8 @@ public final class PresenceDetectionService extends LifecycleService
                 lastPanelActiveElapsed = SystemClock.elapsedRealtime();
             }
             panelActive = nextPanelActive;
+            Log.w(TAG, "Panel state changed: active=" + panelActive
+                    + ", screenOffSession=" + panelScreenOffSession);
             updateCameraState();
             if (!nextPanelActive) {
                 // Keep the camera across the short Activity-pause/screen-off handoff. If this
@@ -134,7 +155,9 @@ public final class PresenceDetectionService extends LifecycleService
     private ProcessCameraProvider cameraProvider;
     private ImageAnalysis imageAnalysis;
     private FaceDetector faceDetector;
+    private PoseDetector poseDetector;
     private long lastFaceDetectorInitAttemptElapsed;
+    private long lastPoseDetectorInitAttemptElapsed;
     private boolean cameraStarting;
     private boolean cameraBound;
     private int cameraGeneration;
@@ -199,15 +222,42 @@ public final class PresenceDetectionService extends LifecycleService
             }
             remotePreferences = preferences;
             preferences.registerOnSharedPreferenceChangeListener(preferenceListener);
-            panelStateToken = UUID.randomUUID().toString();
+            panelStateToken = preferences.getString(
+                    BrightnessSettings.PANEL_STATE_TOKEN,
+                    null);
+            if (panelStateToken == null || panelStateToken.isEmpty()) {
+                panelStateToken = UUID.randomUUID().toString();
+            }
             preferences.edit()
                     .putString(BrightnessSettings.PANEL_STATE_TOKEN, panelStateToken)
                     .putBoolean(BrightnessSettings.PRESENCE_DETECTION_READY, false)
                     .putBoolean(BrightnessSettings.PERSON_PRESENT, false)
                     .commit();
             markSystemBridgeReady(preferences);
+            requestSystemBridgeValidation();
+            mainHandler.postDelayed(this::requestSystemBridgeValidation, 1_000L);
+            mainHandler.postDelayed(this::requestSystemBridgeValidation, 3_000L);
             updateCameraState();
         });
+    }
+
+    private void requestSystemBridgeValidation() {
+        if (startedBySystemBridge || panelStateToken == null || panelStateToken.isEmpty()) {
+            return;
+        }
+        try {
+            Intent intent = new Intent(BrightnessSettings.SYSTEM_BRIDGE_ACTION)
+                    .setPackage("android")
+                    .putExtra(
+                            BrightnessSettings.EXTRA_SYSTEM_BRIDGE_COMMAND,
+                            BrightnessSettings.SYSTEM_BRIDGE_COMMAND_PROBE)
+                    .putExtra(
+                            BrightnessSettings.EXTRA_SYSTEM_BRIDGE_TOKEN,
+                            panelStateToken);
+            sendBroadcast(intent);
+        } catch (Throwable error) {
+            Log.w(TAG, "Unable to validate the system bridge", error);
+        }
     }
 
     private void markSystemBridgeReady(SharedPreferences preferences) {
@@ -276,6 +326,7 @@ public final class PresenceDetectionService extends LifecycleService
                 BrightnessSettings.PRESENCE_DETECTION,
                 BrightnessSettings.DEFAULT_PRESENCE_DETECTION);
         if (!enabled) {
+            Log.w(TAG, "Stopping service because presence detection is disabled");
             stopSelf();
             return;
         }
@@ -285,6 +336,10 @@ public final class PresenceDetectionService extends LifecycleService
         if (shouldMonitorPanel(panelActive)) {
             startCamera();
         } else {
+            Log.w(TAG, "Camera no longer needed: panelActive=" + panelActive
+                    + ", screenOffSession=" + panelScreenOffSession
+                    + ", lastPanelAgeMs="
+                    + (SystemClock.elapsedRealtime() - lastPanelActiveElapsed));
             stopCamera();
         }
     }
@@ -327,6 +382,7 @@ public final class PresenceDetectionService extends LifecycleService
                 imageAnalysis = analysis;
                 cameraStarting = false;
                 cameraBound = true;
+                Log.w(TAG, "Front camera bound for presence detection");
                 // Give a newly started detector a full absence-confirmation window.
                 lastPresenceElapsed = SystemClock.elapsedRealtime();
                 publishedPresence = null;
@@ -337,6 +393,7 @@ public final class PresenceDetectionService extends LifecycleService
                 cameraBound = false;
                 publishReady(false);
                 publishPresence(false);
+                Log.w(TAG, "Unable to bind front camera", error);
             }
         }, ContextCompat.getMainExecutor(this));
     }
@@ -361,6 +418,9 @@ public final class PresenceDetectionService extends LifecycleService
     }
 
     private void stopCamera() {
+        if (cameraBound || cameraStarting || cameraProvider != null) {
+            Log.w(TAG, "Stopping front-camera presence analysis");
+        }
         ++cameraGeneration;
         cameraStarting = false;
         cameraBound = false;
@@ -389,8 +449,11 @@ public final class PresenceDetectionService extends LifecycleService
         }
     }
 
-    private void markPresence(boolean wakeScreen) {
+    private void markPresence(String source, boolean wakeScreen) {
         lastPresenceElapsed = SystemClock.elapsedRealtime();
+        if (publishedPresence == null || !publishedPresence) {
+            Log.w(TAG, "Presence detected by " + source);
+        }
         publishPresence(true);
         if (wakeScreen) {
             wakeScreenIfNeeded();
@@ -413,19 +476,82 @@ public final class PresenceDetectionService extends LifecycleService
 
     private boolean isWithinPresenceGrace() {
         long last = lastPresenceElapsed;
-        return last > 0L && SystemClock.elapsedRealtime() - last <= PRESENCE_GRACE_MS;
+        SharedPreferences preferences = remotePreferences;
+        int delaySeconds = BrightnessSettings.DEFAULT_ABSENCE_DELAY_SECONDS;
+        if (preferences != null) {
+            delaySeconds = BrightnessSettings.clampAbsenceDelaySeconds(
+                    preferences.getInt(
+                            BrightnessSettings.ABSENCE_DELAY_SECONDS,
+                            BrightnessSettings.DEFAULT_ABSENCE_DELAY_SECONDS));
+        }
+        long effectiveGraceMs = delaySeconds * 1_000L;
+        return last > 0L && SystemClock.elapsedRealtime() - last <= effectiveGraceMs;
     }
 
     private void publishPresence(boolean present) {
         if (publishedPresence != null && publishedPresence == present) {
             return;
         }
+        Log.w(TAG, "Presence state changed: present=" + present);
         publishedPresence = present;
         SharedPreferences preferences = remotePreferences;
         if (preferences != null) {
             preferences.edit()
                     .putBoolean(BrightnessSettings.PERSON_PRESENT, present)
                     .commit();
+        }
+        broadcastPresenceState(preferences, present);
+        if (!present) {
+            requestScreenOffForConfirmedAbsence(preferences);
+        }
+    }
+
+    private void broadcastPresenceState(SharedPreferences preferences, boolean present) {
+        if (preferences == null || panelStateToken == null || panelStateToken.isEmpty()) {
+            return;
+        }
+        try {
+            boolean ready = preferences.getBoolean(
+                    BrightnessSettings.PRESENCE_DETECTION_READY,
+                    false);
+            Intent intent = new Intent(BrightnessSettings.PRESENCE_STATE_ACTION)
+                    .setPackage("com.xiaomi.smarthome")
+                    .putExtra(BrightnessSettings.EXTRA_PANEL_STATE_TOKEN, panelStateToken)
+                    .putExtra(BrightnessSettings.EXTRA_PERSON_PRESENT, present)
+                    .putExtra(BrightnessSettings.EXTRA_PRESENCE_READY, ready);
+            sendBroadcast(intent);
+        } catch (Throwable error) {
+            Log.w(TAG, "Unable to publish presence state to Xiaomi Home", error);
+        }
+    }
+
+    private void requestScreenOffForConfirmedAbsence(SharedPreferences preferences) {
+        if (preferences == null
+                || !cameraBound
+                || !preferences.getBoolean(
+                BrightnessSettings.PRESENCE_DETECTION_READY,
+                false)
+                || preferences.getInt(
+                BrightnessSettings.ABSENCE_BEHAVIOR,
+                BrightnessSettings.DEFAULT_ABSENCE_BEHAVIOR)
+                != BrightnessSettings.ABSENCE_SCREEN_OFF
+                || panelStateToken == null
+                || panelStateToken.isEmpty()) {
+            return;
+        }
+        try {
+            Log.w(TAG, "Requesting screen off after confirmed absence");
+            Intent intent = new Intent(BrightnessSettings.SYSTEM_BRIDGE_ACTION)
+                    .setPackage("android")
+                    .putExtra(
+                            BrightnessSettings.EXTRA_SYSTEM_BRIDGE_COMMAND,
+                            BrightnessSettings.SYSTEM_BRIDGE_COMMAND_GO_TO_SLEEP)
+                    .putExtra(
+                            BrightnessSettings.EXTRA_SYSTEM_BRIDGE_TOKEN,
+                            panelStateToken);
+            sendBroadcast(intent);
+        } catch (Throwable error) {
+            Log.w(TAG, "Unable to request screen off after confirmed absence", error);
         }
     }
 
@@ -442,6 +568,9 @@ public final class PresenceDetectionService extends LifecycleService
         analysisExecutor.shutdownNow();
         if (faceDetector != null) {
             faceDetector.close();
+        }
+        if (poseDetector != null) {
+            poseDetector.close();
         }
         super.onDestroy();
     }
@@ -472,55 +601,127 @@ public final class PresenceDetectionService extends LifecycleService
         }
     }
 
+    private PoseDetector getOrCreatePoseDetector() {
+        if (poseDetector != null) {
+            return poseDetector;
+        }
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastPoseDetectorInitAttemptElapsed < POSE_DETECTOR_RETRY_MS) {
+            return null;
+        }
+        lastPoseDetectorInitAttemptElapsed = now;
+        try {
+            poseDetector = PoseDetection.getClient(
+                    new PoseDetectorOptions.Builder()
+                            .setDetectorMode(PoseDetectorOptions.STREAM_MODE)
+                            .build());
+            return poseDetector;
+        } catch (Throwable error) {
+            Log.w(TAG, "Pose detector initialization failed; face and motion remain active",
+                    error);
+            return null;
+        }
+    }
+
+    private static boolean containsConfidentPose(
+            java.util.List<PoseLandmark> landmarks) {
+        int confidentLandmarks = 0;
+        for (PoseLandmark landmark : landmarks) {
+            if (landmark.getInFrameLikelihood() >= MIN_POSE_LANDMARK_CONFIDENCE
+                    && ++confidentLandmarks >= MIN_CONFIDENT_POSE_LANDMARKS) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private final class PresenceAnalyzer implements ImageAnalysis.Analyzer {
         private byte[] previousLuma;
         private long lastFaceStartedElapsed;
+        private long lastPoseStartedElapsed;
+        private long lastFaceHitLogElapsed;
+        private long lastPoseHitLogElapsed;
         private int consecutiveMotionFrames;
 
         @Override
         public void analyze(@NonNull ImageProxy imageProxy) {
             try {
-                if (detectMotion(imageProxy)) {
+                if (LUMA_MOTION_DETECTION_ENABLED && detectMotion(imageProxy)) {
                     consecutiveMotionFrames++;
                     if (consecutiveMotionFrames >= MOTION_REQUIRED_FRAMES) {
                         boolean outsideScreenOffGuard = SystemClock.elapsedRealtime()
                                 - lastScreenOffElapsed >= SCREEN_OFF_MOTION_GUARD_MS;
                         if (outsideScreenOffGuard) {
-                            markPresence(true);
+                            markPresence("luma motion", true);
                         }
                     }
-                } else {
+                } else if (LUMA_MOTION_DETECTION_ENABLED) {
                     consecutiveMotionFrames = 0;
                 }
                 long now = SystemClock.elapsedRealtime();
                 Image mediaImage = imageProxy.getImage();
-                if (mediaImage != null
-                        && now - lastFaceStartedElapsed >= FACE_INTERVAL_MS
-                        && faceDetectionRunning.compareAndSet(false, true)) {
-                    FaceDetector detector = getOrCreateFaceDetector();
-                    if (detector == null) {
-                        faceDetectionRunning.set(false);
-                        imageProxy.close();
-                        return;
-                    }
-                    lastFaceStartedElapsed = now;
+                boolean faceDue = now - lastFaceStartedElapsed >= FACE_INTERVAL_MS;
+                boolean poseDue = now - lastPoseStartedElapsed >= POSE_INTERVAL_MS;
+                if (mediaImage != null && (faceDue || poseDue)
+                        && visionDetectionRunning.compareAndSet(false, true)) {
                     InputImage input = InputImage.fromMediaImage(
                             mediaImage,
                             imageProxy.getImageInfo().getRotationDegrees());
-                    detector.process(input)
-                            .addOnSuccessListener(faces -> {
-                                if (!faces.isEmpty()) {
-                                    markPresence(true);
-                                }
-                            })
-                            .addOnCompleteListener(task -> {
-                                faceDetectionRunning.set(false);
-                                imageProxy.close();
-                            });
+                    boolean runPose = poseDue
+                            && (!faceDue || lastPoseStartedElapsed <= lastFaceStartedElapsed);
+                    if (runPose) {
+                        PoseDetector detector = getOrCreatePoseDetector();
+                        if (detector == null) {
+                            visionDetectionRunning.set(false);
+                            imageProxy.close();
+                            return;
+                        }
+                        lastPoseStartedElapsed = now;
+                        detector.process(input)
+                                .addOnSuccessListener(pose -> {
+                                    if (containsConfidentPose(pose.getAllPoseLandmarks())) {
+                                        long hitNow = SystemClock.elapsedRealtime();
+                                        if (hitNow - lastPoseHitLogElapsed >= 5_000L) {
+                                            lastPoseHitLogElapsed = hitNow;
+                                            Log.w(TAG, "Pose detector currently reports a person");
+                                        }
+                                        markPresence("pose", true);
+                                    }
+                                })
+                                .addOnCompleteListener(task -> {
+                                    visionDetectionRunning.set(false);
+                                    imageProxy.close();
+                                });
+                    } else {
+                        FaceDetector detector = getOrCreateFaceDetector();
+                        if (detector == null) {
+                            visionDetectionRunning.set(false);
+                            imageProxy.close();
+                            return;
+                        }
+                        lastFaceStartedElapsed = now;
+                        detector.process(input)
+                                .addOnSuccessListener(faces -> {
+                                    if (!faces.isEmpty()) {
+                                        long hitNow = SystemClock.elapsedRealtime();
+                                        if (hitNow - lastFaceHitLogElapsed >= 5_000L) {
+                                            lastFaceHitLogElapsed = hitNow;
+                                            Log.w(TAG, "Face detector currently reports "
+                                                    + faces.size() + " face(s)");
+                                        }
+                                        markPresence("face", true);
+                                    }
+                                })
+                                .addOnCompleteListener(task -> {
+                                    visionDetectionRunning.set(false);
+                                    imageProxy.close();
+                                });
+                    }
                     return;
                 }
             } catch (Throwable ignored) {
                 // A later frame can recover from transient camera or detector errors.
+                visionDetectionRunning.set(false);
             }
             imageProxy.close();
         }

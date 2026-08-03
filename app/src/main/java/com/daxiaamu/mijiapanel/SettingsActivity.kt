@@ -14,6 +14,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
@@ -41,18 +42,32 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.Brightness6
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonSearch
+import androidx.compose.material.icons.filled.Screenshot
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SegmentedButton
@@ -74,6 +89,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -90,6 +106,8 @@ import kotlin.math.roundToInt
 
 class SettingsActivity : ComponentActivity() {
     private companion object {
+        const val BLOG_URL = "https://www.daxiaamu.com"
+        const val GITHUB_PROFILE_URL = "https://github.com/daxiaamu"
         const val REPOSITORY_URL = "https://github.com/daxiaamu/mijiapanel"
     }
 
@@ -116,6 +134,9 @@ class SettingsActivity : ComponentActivity() {
     private var systemFrameworkScopeRequestPending by mutableStateOf(false)
     private var absenceBehavior by mutableIntStateOf(
         BrightnessSettings.DEFAULT_ABSENCE_BEHAVIOR,
+    )
+    private var absenceDelaySeconds by mutableIntStateOf(
+        BrightnessSettings.DEFAULT_ABSENCE_DELAY_SECONDS,
     )
     private var remotePreferencesReady by mutableStateOf(false)
     private var launcherIconVisible by mutableStateOf(true)
@@ -160,6 +181,7 @@ class SettingsActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         title = getString(R.string.settings_title)
         launcherIconVisible = isLauncherIconVisible()
         updateStatus = getString(R.string.update_auto_check_summary)
@@ -190,15 +212,14 @@ class SettingsActivity : ComponentActivity() {
     @Composable
     private fun SettingsScreen() {
         Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.safeDrawing),
+            modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background,
         ) {
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.safeDrawing),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    horizontal = 20.dp,
                     vertical = 24.dp,
                 ),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -206,12 +227,18 @@ class SettingsActivity : ComponentActivity() {
                 item {
                     Text(
                         text = getString(R.string.settings_title),
+                        modifier = Modifier.padding(horizontal = 20.dp),
                         style = MaterialTheme.typography.headlineLarge,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
                         text = getString(R.string.settings_description),
-                        modifier = Modifier.padding(top = 6.dp, bottom = 24.dp),
+                        modifier = Modifier.padding(
+                            start = 20.dp,
+                            top = 6.dp,
+                            end = 20.dp,
+                            bottom = 24.dp,
+                        ),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -220,6 +247,7 @@ class SettingsActivity : ComponentActivity() {
                 item { SectionTitle(getString(R.string.display_settings)) }
                 item {
                     SwitchSetting(
+                        icon = Icons.Default.Brightness6,
                         title = getString(R.string.lock_brightness),
                         summary = getString(R.string.lock_brightness_summary),
                         checked = brightnessLocked,
@@ -241,7 +269,12 @@ class SettingsActivity : ComponentActivity() {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(IntrinsicSize.Min)
-                                .padding(start = 20.dp, top = 8.dp, bottom = 8.dp),
+                                .padding(
+                                    start = 64.dp,
+                                    top = 8.dp,
+                                    end = 16.dp,
+                                    bottom = 8.dp,
+                                ),
                         ) {
                             Box(
                                 modifier = Modifier
@@ -353,6 +386,7 @@ class SettingsActivity : ComponentActivity() {
                 }
                 item {
                     SwitchSetting(
+                        icon = Icons.Default.Shield,
                         title = getString(R.string.burn_in_protection),
                         summary = getString(R.string.burn_in_protection_summary),
                         checked = burnInProtectionEnabled,
@@ -362,6 +396,7 @@ class SettingsActivity : ComponentActivity() {
                 }
                 item {
                     SwitchSetting(
+                        icon = Icons.Default.Screenshot,
                         title = getString(R.string.draw_in_display_cutout),
                         summary = getString(R.string.draw_in_display_cutout_summary),
                         checked = drawInDisplayCutoutEnabled,
@@ -387,6 +422,7 @@ class SettingsActivity : ComponentActivity() {
                         else -> null
                     }
                     SwitchSetting(
+                        icon = Icons.Default.PersonSearch,
                         title = getString(R.string.presence_detection),
                         summary = getString(R.string.presence_detection_summary),
                         checked = presenceDetectionEnabled,
@@ -420,7 +456,12 @@ class SettingsActivity : ComponentActivity() {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(IntrinsicSize.Min)
-                                .padding(start = 20.dp, top = 8.dp, bottom = 8.dp),
+                                .padding(
+                                    start = 64.dp,
+                                    top = 8.dp,
+                                    end = 16.dp,
+                                    bottom = 8.dp,
+                                ),
                         ) {
                             Box(
                                 modifier = Modifier
@@ -435,6 +476,47 @@ class SettingsActivity : ComponentActivity() {
                                     .weight(1f)
                                     .padding(start = 12.dp),
                             ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = getString(R.string.absence_delay),
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    Text(
+                                        text = formatAbsenceDelay(absenceDelaySeconds),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                }
+                                Text(
+                                    text = getString(
+                                        R.string.absence_delay_summary,
+                                        formatAbsenceDelay(absenceDelaySeconds),
+                                    ),
+                                    modifier = Modifier.padding(top = 3.dp),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Slider(
+                                    value = absenceDelaySeconds.toFloat(),
+                                    onValueChange = {
+                                        setAbsenceDelay(it.roundToInt(), commit = false)
+                                    },
+                                    onValueChangeFinished = {
+                                        setAbsenceDelay(absenceDelaySeconds, commit = true)
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(52.dp),
+                                    enabled = remotePreferencesReady,
+                                    valueRange =
+                                        BrightnessSettings.MIN_ABSENCE_DELAY_SECONDS.toFloat()..
+                                            BrightnessSettings.MAX_ABSENCE_DELAY_SECONDS.toFloat(),
+                                )
                                 Text(
                                     text = getString(R.string.absence_behavior),
                                     style = MaterialTheme.typography.titleMedium,
@@ -478,6 +560,7 @@ class SettingsActivity : ComponentActivity() {
                 item { SectionTitle(getString(R.string.app_settings)) }
                 item {
                     SwitchSetting(
+                        icon = Icons.Default.Apps,
                         title = getString(R.string.show_launcher_icon),
                         summary = getString(R.string.show_launcher_icon_summary),
                         checked = launcherIconVisible,
@@ -488,107 +571,110 @@ class SettingsActivity : ComponentActivity() {
                 item { SectionDivider() }
                 item { SectionTitle(getString(R.string.app_update)) }
                 item {
-                    Text(
-                        text = getString(R.string.current_version, BuildConfig.VERSION_NAME),
-                        modifier = Modifier.padding(top = 8.dp),
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                    Text(
-                        text = updateStatus,
-                        modifier = Modifier.padding(top = 6.dp, bottom = 12.dp),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        Button(
-                            onClick = {
-                                if (availableUpdate != null || readyDownloadId >= 0L) {
-                                    revalidateUpdateAction()
-                                } else {
-                                    checkForUpdates(manual = true)
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = updateButtonEnabled,
-                        ) {
-                            Text(
-                                if (readyDownloadId >= 0L) {
-                                    getString(R.string.update_install)
-                                } else if (availableUpdate != null) {
-                                    getString(R.string.update_download)
-                                } else {
-                                    getString(R.string.update_check_action)
-                                },
-                            )
-                        }
+                    val performUpdateAction = {
                         if (availableUpdate != null || readyDownloadId >= 0L) {
-                            Badge(
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .offset(x = 3.dp, y = (-3).dp),
-                            )
+                            revalidateUpdateAction()
+                        } else {
+                            checkForUpdates(manual = true)
                         }
                     }
+                    val actionText = if (readyDownloadId >= 0L) {
+                        getString(R.string.update_install)
+                    } else if (availableUpdate != null) {
+                        getString(R.string.update_download)
+                    } else {
+                        getString(R.string.update_check_action)
+                    }
+                    ListItem(
+                        headlineContent = {
+                            Text(
+                                getString(
+                                    R.string.current_version,
+                                    BuildConfig.VERSION_NAME,
+                                ),
+                            )
+                        },
+                        supportingContent = { Text(updateStatus) },
+                        leadingContent = {
+                            Icon(Icons.Default.SystemUpdate, contentDescription = null)
+                        },
+                        trailingContent = {
+                            if (checkingUpdate) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
+                                Row(
+                                    modifier = Modifier
+                                        .widthIn(min = 64.dp)
+                                        .height(48.dp)
+                                        .clickable(enabled = updateButtonEnabled) {
+                                            performUpdateAction()
+                                        },
+                                    horizontalArrangement = Arrangement.spacedBy(
+                                        6.dp,
+                                        Alignment.End,
+                                    ),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = actionText,
+                                        color = if (updateButtonEnabled) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                        },
+                                        style = MaterialTheme.typography.labelLarge,
+                                    )
+                                    if (availableUpdate != null || readyDownloadId >= 0L) {
+                                        Badge(modifier = Modifier.size(7.dp))
+                                    }
+                                }
+                            }
+                        },
+                        modifier = Modifier.clickable(enabled = updateButtonEnabled) {
+                            performUpdateAction()
+                        },
+                    )
                 }
 
                 item { SectionDivider() }
                 item { SectionTitle(getString(R.string.about)) }
                 item {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { openUrl(REPOSITORY_URL) },
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                        ),
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(
-                                text = getString(R.string.developer_name),
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Medium,
-                            )
-                            Text(
-                                text = getString(R.string.developer_description),
-                                modifier = Modifier.padding(top = 3.dp),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Text(
-                                text = getString(R.string.repository_name),
-                                modifier = Modifier.padding(top = 5.dp),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                    }
+                    AboutSetting(
+                        icon = Icons.Default.Language,
+                        title = getString(R.string.developer_blog),
+                        subtitle = getString(R.string.developer_blog_summary),
+                        external = true,
+                        onClick = { openUrl(BLOG_URL) },
+                    )
                 }
                 item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showOpenSourceLicenses = true }
-                            .padding(vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = getString(R.string.open_source_licenses),
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                            Text(
-                                text = getString(R.string.open_source_licenses_summary),
-                                modifier = Modifier.padding(top = 3.dp),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Text(
-                            text = "›",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    AboutSetting(
+                        icon = Icons.Default.Person,
+                        title = getString(R.string.developer_github),
+                        subtitle = getString(R.string.developer_github_summary),
+                        external = true,
+                        onClick = { openUrl(GITHUB_PROFILE_URL) },
+                    )
+                }
+                item {
+                    AboutSetting(
+                        icon = Icons.Default.Code,
+                        title = getString(R.string.view_source_code),
+                        subtitle = getString(R.string.view_source_code_summary),
+                        external = true,
+                        onClick = { openUrl(REPOSITORY_URL) },
+                    )
+                }
+                item {
+                    AboutSetting(
+                        icon = Icons.Default.Description,
+                        title = getString(R.string.open_source_licenses),
+                        subtitle = getString(R.string.open_source_licenses_summary),
+                        onClick = { showOpenSourceLicenses = true },
+                    )
                 }
                 item { Spacer(Modifier.height(12.dp)) }
             }
@@ -667,7 +753,7 @@ class SettingsActivity : ComponentActivity() {
     private fun SectionTitle(title: String) {
         Text(
             text = title,
-            modifier = Modifier.padding(bottom = 4.dp),
+            modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 8.dp),
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
         )
@@ -675,11 +761,41 @@ class SettingsActivity : ComponentActivity() {
 
     @Composable
     private fun SectionDivider() {
-        HorizontalDivider(modifier = Modifier.padding(vertical = 18.dp))
+        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+    }
+
+    @Composable
+    private fun AboutSetting(
+        icon: ImageVector,
+        title: String,
+        subtitle: String,
+        external: Boolean = false,
+        onClick: () -> Unit,
+    ) {
+        ListItem(
+            headlineContent = { Text(title) },
+            supportingContent = { Text(subtitle) },
+            leadingContent = { Icon(icon, contentDescription = null) },
+            trailingContent = {
+                if (external) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                        contentDescription = null,
+                    )
+                } else {
+                    Text(
+                        text = "›",
+                        style = MaterialTheme.typography.titleLarge,
+                    )
+                }
+            },
+            modifier = Modifier.clickable(onClick = onClick),
+        )
     }
 
     @Composable
     private fun SwitchSetting(
+        icon: ImageVector,
         title: String,
         summary: String,
         checked: Boolean,
@@ -688,51 +804,58 @@ class SettingsActivity : ComponentActivity() {
         onWarningClick: (() -> Unit)? = null,
         onCheckedChange: (Boolean) -> Unit,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
+        val contentColor = if (enabled) {
+            MaterialTheme.colorScheme.onSurface
+        } else {
+            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+        }
+        ListItem(
+            headlineContent = {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = if (enabled) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                    },
+                    color = contentColor,
                 )
-                Text(
-                    text = summary,
-                    modifier = Modifier.padding(top = 3.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
-                        alpha = if (enabled) 1f else 0.38f,
-                    ),
-                )
-                if (warning != null) {
+            },
+            supportingContent = {
+                Column {
                     Text(
-                        text = warning,
-                        modifier = Modifier
-                            .padding(top = 5.dp)
-                            .clickable(enabled = onWarningClick != null) {
-                                onWarningClick?.invoke()
-                            },
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.error,
+                        text = summary,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                            alpha = if (enabled) 1f else 0.38f,
+                        ),
                     )
+                    if (warning != null) {
+                        Text(
+                            text = warning,
+                            modifier = Modifier
+                                .padding(top = 5.dp)
+                                .clickable(enabled = onWarningClick != null) {
+                                    onWarningClick?.invoke()
+                                },
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
-            }
-            Switch(
-                checked = checked,
-                onCheckedChange = onCheckedChange,
-                enabled = enabled,
-            )
-        }
+            },
+            leadingContent = {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = contentColor,
+                )
+            },
+            trailingContent = {
+                Switch(
+                    checked = checked,
+                    onCheckedChange = onCheckedChange,
+                    enabled = enabled,
+                )
+            },
+            modifier = Modifier.clickable(enabled = enabled) {
+                onCheckedChange(!checked)
+            },
+        )
     }
 
     private fun updateBrightnessLock(locked: Boolean) {
@@ -836,6 +959,30 @@ class SettingsActivity : ComponentActivity() {
             ?.commit()
     }
 
+    private fun setAbsenceDelay(value: Int, commit: Boolean) {
+        val safeValue = BrightnessSettings.clampAbsenceDelaySeconds(value)
+        absenceDelaySeconds = safeValue
+        if (!commit) return
+        preferences?.edit()
+            ?.putInt(BrightnessSettings.ABSENCE_DELAY_SECONDS, safeValue)
+            ?.commit()
+    }
+
+    private fun formatAbsenceDelay(seconds: Int): String {
+        val safeSeconds = BrightnessSettings.clampAbsenceDelaySeconds(seconds)
+        val minutes = safeSeconds / 60
+        val remainingSeconds = safeSeconds % 60
+        return when {
+            minutes == 0 -> getString(R.string.duration_seconds, remainingSeconds)
+            remainingSeconds == 0 -> getString(R.string.duration_minutes, minutes)
+            else -> getString(
+                R.string.duration_minutes_seconds,
+                minutes,
+                remainingSeconds,
+            )
+        }
+    }
+
     private fun requestNotificationPermissionForPresence() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
@@ -876,6 +1023,12 @@ class SettingsActivity : ComponentActivity() {
         ).coerceIn(
             BrightnessSettings.ABSENCE_SCREEN_OFF,
             BrightnessSettings.ABSENCE_MINIMUM_BRIGHTNESS,
+        )
+        absenceDelaySeconds = BrightnessSettings.clampAbsenceDelaySeconds(
+            remote.getInt(
+                BrightnessSettings.ABSENCE_DELAY_SECONDS,
+                BrightnessSettings.DEFAULT_ABSENCE_DELAY_SECONDS,
+            ),
         )
         localPreferences.edit()
             .putBoolean(BrightnessSettings.PRESENCE_DETECTION, presenceDetectionEnabled)

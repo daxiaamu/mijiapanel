@@ -77,6 +77,13 @@ private val openSourceProjects = listOf(
         projectUrl = "https://developers.google.com/ml-kit/vision/face-detection/android",
         licenseUrl = "https://developers.google.com/ml-kit/terms",
     ),
+    OpenSourceProject(
+        name = "Google ML Kit Pose Detection",
+        role = R.string.open_source_role_third_party,
+        license = "ML Kit Terms of Service",
+        projectUrl = "https://developers.google.com/ml-kit/vision/pose-detection/android",
+        licenseUrl = "https://developers.google.com/ml-kit/terms",
+    ),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)

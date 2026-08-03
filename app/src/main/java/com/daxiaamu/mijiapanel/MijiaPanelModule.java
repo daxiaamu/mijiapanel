@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
@@ -60,12 +61,16 @@ public final class MijiaPanelModule extends XposedModule {
     private static final String MODULE_PACKAGE = "com.daxiaamu.mijiapanel";
     private static final String PRESENCE_SERVICE_CLASS =
             "com.daxiaamu.mijiapanel.PresenceDetectionService";
-    private static final String SYSTEM_BRIDGE_ACTION =
-            "com.daxiaamu.mijiapanel.action.SYSTEM_BRIDGE";
-    private static final String EXTRA_SYSTEM_BRIDGE_COMMAND = "command";
-    private static final String EXTRA_SYSTEM_BRIDGE_TOKEN = "token";
-    private static final int SYSTEM_BRIDGE_START = 1;
+    private static final String SYSTEM_BRIDGE_ACTION = BrightnessSettings.SYSTEM_BRIDGE_ACTION;
+    private static final String EXTRA_SYSTEM_BRIDGE_COMMAND =
+            BrightnessSettings.EXTRA_SYSTEM_BRIDGE_COMMAND;
+    private static final String EXTRA_SYSTEM_BRIDGE_TOKEN =
+            BrightnessSettings.EXTRA_SYSTEM_BRIDGE_TOKEN;
+    private static final int SYSTEM_BRIDGE_START =
+            BrightnessSettings.SYSTEM_BRIDGE_COMMAND_START;
     private static final int SYSTEM_BRIDGE_STOP = 2;
+    private static final int SYSTEM_BRIDGE_GO_TO_SLEEP =
+            BrightnessSettings.SYSTEM_BRIDGE_COMMAND_GO_TO_SLEEP;
     private static final String PAD_MAIN = "com.xiaomi.smarthome.pad.MainActivity";
     private static final String MODE_ACTIVITY =
             "com.xiaomi.smarthome.pad.settings.ModeActivity";
@@ -97,11 +102,47 @@ public final class MijiaPanelModule extends XposedModule {
     private final Object burnInControllerLock = new Object();
     private BurnInShiftController burnInController;
     private final AtomicBoolean debugReceiverRegistered = new AtomicBoolean();
+    private final AtomicBoolean presenceStateReceiverRegistered = new AtomicBoolean();
     private final AtomicBoolean systemBridgeHookInstalled = new AtomicBoolean();
     private final AtomicBoolean oplusStartupAllowanceHookInstalled = new AtomicBoolean();
     private final AtomicBoolean systemBridgeRetryScheduled = new AtomicBoolean();
     private final AtomicBoolean systemBridgeReceiverRegistered = new AtomicBoolean();
     private final AtomicBoolean compatibilityHooksInstalled = new AtomicBoolean();
+    private volatile String validatedPresenceBridgeToken;
+    private final BroadcastReceiver presenceStateReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (!BrightnessSettings.PRESENCE_STATE_ACTION.equals(intent.getAction())) {
+                return;
+            }
+            try {
+                SharedPreferences preferences = getBrightnessPreferences();
+                String expectedToken = preferences.getString(
+                        BrightnessSettings.PANEL_STATE_TOKEN,
+                        null);
+                String receivedToken = intent.getStringExtra(
+                        BrightnessSettings.EXTRA_PANEL_STATE_TOKEN);
+                if (expectedToken == null || !expectedToken.equals(receivedToken)) {
+                    log(Log.WARN, TAG, "Ignored presence state with invalid token");
+                    return;
+                }
+                boolean present = intent.getBooleanExtra(
+                        BrightnessSettings.EXTRA_PERSON_PRESENT,
+                        false);
+                boolean ready = intent.getBooleanExtra(
+                        BrightnessSettings.EXTRA_PRESENCE_READY,
+                        false);
+                Activity activity = activePadActivity.get();
+                if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
+                    return;
+                }
+                activity.runOnUiThread(
+                        () -> applyBrightnessSetting(activity, present, ready));
+            } catch (Throwable error) {
+                logFailure("Unable to apply explicit presence state", error);
+            }
+        }
+    };
     private final BroadcastReceiver debugReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -125,20 +166,48 @@ public final class MijiaPanelModule extends XposedModule {
                 return;
             }
             try {
+                int command = intent.getIntExtra(EXTRA_SYSTEM_BRIDGE_COMMAND, 0);
+                String receivedToken = intent.getStringExtra(EXTRA_SYSTEM_BRIDGE_TOKEN);
+                Intent serviceIntent = new Intent()
+                        .setClassName(MODULE_PACKAGE, PRESENCE_SERVICE_CLASS)
+                        .putExtra(BrightnessSettings.EXTRA_SYSTEM_BRIDGE_START, true);
+                if (command == BrightnessSettings.SYSTEM_BRIDGE_COMMAND_PROBE) {
+                    // An APK update can recreate the module process and its session token
+                    // while system_server still holds an older RemotePreferences snapshot.
+                    // On Android 14+, authenticate the probe by sender UID and adopt the
+                    // current token without requiring another reboot.
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+                            && receivedToken != null
+                            && !receivedToken.isEmpty()
+                            && isTrustedPresenceBridgeSender(context, getSentFromUid())) {
+                        validatedPresenceBridgeToken = receivedToken;
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        context.startForegroundService(serviceIntent);
+                    } else {
+                        context.startService(serviceIntent);
+                    }
+                    log(Log.INFO, TAG, "System bridge probe succeeded");
+                    return;
+                }
                 SharedPreferences preferences = getRemotePreferences(
                         BrightnessSettings.PREFERENCES);
                 String expectedToken = preferences.getString(
                         BrightnessSettings.PANEL_STATE_TOKEN,
                         null);
-                String receivedToken = intent.getStringExtra(EXTRA_SYSTEM_BRIDGE_TOKEN);
-                if (expectedToken == null || !expectedToken.equals(receivedToken)) {
+                boolean matchesPreferences = expectedToken != null
+                        && expectedToken.equals(receivedToken);
+                boolean matchesValidatedSession = validatedPresenceBridgeToken != null
+                        && validatedPresenceBridgeToken.equals(receivedToken);
+                if (!matchesPreferences && !matchesValidatedSession) {
                     log(Log.WARN, TAG, "Rejected presence bridge request with invalid token");
                     return;
                 }
-                int command = intent.getIntExtra(EXTRA_SYSTEM_BRIDGE_COMMAND, 0);
-                Intent serviceIntent = new Intent()
-                        .setClassName(MODULE_PACKAGE, PRESENCE_SERVICE_CLASS)
-                        .putExtra(BrightnessSettings.EXTRA_SYSTEM_BRIDGE_START, true);
+                validatedPresenceBridgeToken = receivedToken;
+                if (command == SYSTEM_BRIDGE_GO_TO_SLEEP) {
+                    putSystemToSleep(context);
+                    return;
+                }
                 if (command == SYSTEM_BRIDGE_START) {
                     boolean enabled = preferences.getBoolean(
                             BrightnessSettings.PRESENCE_DETECTION,
@@ -161,6 +230,14 @@ public final class MijiaPanelModule extends XposedModule {
             }
         }
     };
+
+    private boolean isTrustedPresenceBridgeSender(Context context, int senderUid) {
+        try {
+            return senderUid == context.getPackageManager().getPackageUid(MODULE_PACKAGE, 0);
+        } catch (PackageManager.NameNotFoundException ignored) {
+            return false;
+        }
+    }
     private final SharedPreferences.OnSharedPreferenceChangeListener brightnessChangeListener =
             (preferences, key) -> {
                 boolean brightnessChanged = BrightnessSettings.LOCK_BRIGHTNESS.equals(key)
@@ -172,6 +249,10 @@ public final class MijiaPanelModule extends XposedModule {
                         || BrightnessSettings.ABSENCE_BEHAVIOR.equals(key)
                         || BrightnessSettings.PRESENCE_DETECTION_READY.equals(key)
                         || BrightnessSettings.PERSON_PRESENT.equals(key);
+                boolean absenceStateChanged =
+                        BrightnessSettings.ABSENCE_BEHAVIOR.equals(key)
+                                || BrightnessSettings.PRESENCE_DETECTION_READY.equals(key)
+                                || BrightnessSettings.PERSON_PRESENT.equals(key);
                 boolean panelStateTokenChanged =
                         BrightnessSettings.PANEL_STATE_TOKEN.equals(key);
                 boolean presenceToggleChanged =
@@ -202,6 +283,9 @@ public final class MijiaPanelModule extends XposedModule {
                         if (presenceChanged) {
                             applyKeepScreenPolicy(activity);
                             applyBrightnessSetting(activity);
+                            if (absenceStateChanged) {
+                                requestImmediateScreenOffIfNeeded(activity);
+                            }
                         }
                         if (panelStateTokenChanged) {
                             publishPanelActive(activity, true);
@@ -422,6 +506,7 @@ public final class MijiaPanelModule extends XposedModule {
                         Context base = (Context) chain.getArg(0);
                         targetContext = base;
                         registerDebugReceiver(base);
+                        registerPresenceStateReceiver(base);
                         ensureCompatibilityHooks(loader, base);
                         // Never replace the Application context. A process-wide
                         // tablet override breaks the normal page after pad-mode exit.
@@ -809,9 +894,13 @@ public final class MijiaPanelModule extends XposedModule {
                             activity.getWindow().getDecorView().postDelayed(
                                     () -> {
                                         if (!activity.isDestroyed()) {
+                                            boolean resumedAgain =
+                                                    activePadActivity.get() == activity
+                                                            && activity.hasWindowFocus();
                                             publishPanelActive(
                                                     activity,
-                                                    !isDeviceInteractive(activity));
+                                                    resumedAgain
+                                                            || !isDeviceInteractive(activity));
                                         }
                                     },
                                     PANEL_PAUSE_STATE_DELAY_MS);
@@ -939,6 +1028,13 @@ public final class MijiaPanelModule extends XposedModule {
     }
 
     private void applyBrightnessSetting(Activity activity) {
+        applyBrightnessSetting(activity, null, null);
+    }
+
+    private void applyBrightnessSetting(
+            Activity activity,
+            Boolean personPresentOverride,
+            Boolean detectionReadyOverride) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
             return;
         }
@@ -949,10 +1045,14 @@ public final class MijiaPanelModule extends XposedModule {
             boolean detectionEnabled = preferences.getBoolean(
                     BrightnessSettings.PRESENCE_DETECTION,
                     BrightnessSettings.DEFAULT_PRESENCE_DETECTION);
-            boolean detectionReady = preferences.getBoolean(
+            boolean detectionReady = detectionReadyOverride != null
+                    ? detectionReadyOverride
+                    : preferences.getBoolean(
                     BrightnessSettings.PRESENCE_DETECTION_READY,
                     false);
-            boolean personPresent = preferences.getBoolean(
+            boolean personPresent = personPresentOverride != null
+                    ? personPresentOverride
+                    : preferences.getBoolean(
                     BrightnessSettings.PERSON_PRESENT,
                     false);
             int absenceBehavior = preferences.getInt(
@@ -1036,7 +1136,99 @@ public final class MijiaPanelModule extends XposedModule {
         }
     }
 
-    private static boolean isDeviceInteractive(Activity activity) {
+    private void registerPresenceStateReceiver(Context context) {
+        if (!isMainProcess()
+                || !presenceStateReceiverRegistered.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            IntentFilter filter = new IntentFilter(BrightnessSettings.PRESENCE_STATE_ACTION);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(
+                        presenceStateReceiver,
+                        filter,
+                        Context.RECEIVER_EXPORTED);
+            } else {
+                context.registerReceiver(presenceStateReceiver, filter);
+            }
+        } catch (Throwable error) {
+            presenceStateReceiverRegistered.set(false);
+            logFailure("Unable to register explicit presence-state receiver", error);
+        }
+    }
+
+    private void requestImmediateScreenOffIfNeeded(Context context) {
+        try {
+            SharedPreferences preferences = getBrightnessPreferences();
+            boolean shouldScreenOff = preferences.getBoolean(
+                    BrightnessSettings.PRESENCE_DETECTION,
+                    BrightnessSettings.DEFAULT_PRESENCE_DETECTION)
+                    && preferences.getBoolean(
+                    BrightnessSettings.PRESENCE_DETECTION_READY,
+                    false)
+                    && !preferences.getBoolean(
+                    BrightnessSettings.PERSON_PRESENT,
+                    false)
+                    && preferences.getInt(
+                    BrightnessSettings.ABSENCE_BEHAVIOR,
+                    BrightnessSettings.DEFAULT_ABSENCE_BEHAVIOR)
+                    == BrightnessSettings.ABSENCE_SCREEN_OFF;
+            if (!shouldScreenOff || !isDeviceInteractive(context)) {
+                return;
+            }
+            String token = preferences.getString(BrightnessSettings.PANEL_STATE_TOKEN, null);
+            if (token == null || token.isEmpty()) {
+                return;
+            }
+            Intent intent = new Intent(SYSTEM_BRIDGE_ACTION)
+                    .setPackage(SYSTEM_CONTEXT_PACKAGE)
+                    .putExtra(EXTRA_SYSTEM_BRIDGE_COMMAND, SYSTEM_BRIDGE_GO_TO_SLEEP)
+                    .putExtra(EXTRA_SYSTEM_BRIDGE_TOKEN, token);
+            context.sendBroadcast(intent);
+        } catch (Throwable error) {
+            logFailure("Unable to request immediate panel screen-off", error);
+        }
+    }
+
+    private void putSystemToSleep(Context context) {
+        try {
+            PowerManager powerManager = context.getSystemService(PowerManager.class);
+            if (powerManager == null || !powerManager.isInteractive()) {
+                return;
+            }
+            Method singleArgument = null;
+            Method threeArguments = null;
+            for (Method method : PowerManager.class.getDeclaredMethods()) {
+                if (!"goToSleep".equals(method.getName())) {
+                    continue;
+                }
+                Class<?>[] parameters = method.getParameterTypes();
+                if (parameters.length == 1 && parameters[0] == long.class) {
+                    singleArgument = method;
+                } else if (parameters.length == 3
+                        && parameters[0] == long.class
+                        && parameters[1] == int.class
+                        && parameters[2] == int.class) {
+                    threeArguments = method;
+                }
+            }
+            long now = SystemClock.uptimeMillis();
+            if (threeArguments != null) {
+                threeArguments.setAccessible(true);
+                threeArguments.invoke(powerManager, now, 0, 0);
+            } else if (singleArgument != null) {
+                singleArgument.setAccessible(true);
+                singleArgument.invoke(powerManager, now);
+            } else {
+                throw new NoSuchMethodException("PowerManager.goToSleep");
+            }
+            log(Log.INFO, TAG, "System bridge put the absent panel to sleep");
+        } catch (Throwable error) {
+            logFailure("System bridge could not put the panel to sleep", error);
+        }
+    }
+
+    private static boolean isDeviceInteractive(Context activity) {
         android.os.PowerManager powerManager =
                 (android.os.PowerManager) activity.getSystemService(Context.POWER_SERVICE);
         return powerManager == null || powerManager.isInteractive();
@@ -1046,36 +1238,21 @@ public final class MijiaPanelModule extends XposedModule {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
             return;
         }
-        boolean keepScreenOn = true;
         boolean detectionEnabled = false;
         try {
             SharedPreferences preferences = getBrightnessPreferences();
             detectionEnabled = preferences.getBoolean(
                     BrightnessSettings.PRESENCE_DETECTION,
                     BrightnessSettings.DEFAULT_PRESENCE_DETECTION);
-            if (detectionEnabled) {
-                boolean ready = preferences.getBoolean(
-                        BrightnessSettings.PRESENCE_DETECTION_READY,
-                        false);
-                boolean present = preferences.getBoolean(
-                        BrightnessSettings.PERSON_PRESENT,
-                        false);
-                int absenceBehavior = preferences.getInt(
-                        BrightnessSettings.ABSENCE_BEHAVIOR,
-                        BrightnessSettings.DEFAULT_ABSENCE_BEHAVIOR);
-                keepScreenOn = !ready
-                        || present
-                        || absenceBehavior == BrightnessSettings.ABSENCE_MINIMUM_BRIGHTNESS;
-            }
         } catch (Throwable error) {
             logFailure("Unable to read presence detection state", error);
         }
         Window window = activity.getWindow();
-        if (keepScreenOn) {
-            window.addFlags(WindowManagerFlags.FLAG_KEEP_SCREEN_ON);
-        } else {
-            window.clearFlags(WindowManagerFlags.FLAG_KEEP_SCREEN_ON);
-        }
+        // The panel owns its screen policy. In screen-off mode a confirmed absence is
+        // handled explicitly through PowerManager.goToSleep(). Clearing this flag would
+        // let Android's normal timeout enter its DIM phase first, leaving the panel at
+        // near-minimum brightness instead of performing the selected absence action.
+        window.addFlags(WindowManagerFlags.FLAG_KEEP_SCREEN_ON);
         applyPadWakeLockPolicy(detectionEnabled);
     }
 
