@@ -15,6 +15,8 @@ import android.content.pm.ServiceInfo;
 import android.media.Image;
 import android.os.Build;
 import android.os.Handler;
+import android.os.Binder;
+import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
@@ -58,15 +60,15 @@ public final class PresenceDetectionService extends LifecycleService
     private static final int NOTIFICATION_ID = 2101;
     private static final long FACE_INTERVAL_MS = 1_000L;
     private static final long POSE_INTERVAL_MS = 1_500L;
+    private static final long SCREEN_OFF_FACE_INTERVAL_MS = 350L;
+    private static final long SCREEN_OFF_POSE_INTERVAL_MS = 700L;
     private static final long STATE_TICK_MS = 2_000L;
     private static final long SCREEN_OFF_REQUEST_RETRY_MS = 5_000L;
-    private static final long SCREEN_OFF_MOTION_GUARD_MS = 3_000L;
     private static final long PANEL_SCREEN_OFF_HANDOFF_MS = 5_000L;
     private static final int MOTION_REQUIRED_FRAMES = 2;
-    // Motion is used only while the display is actually off. The dark camera image can
-    // make face/pose detection unreliable without the screen's illumination; motion may
-    // wake the panel, after which face/pose remains the authoritative presence signal.
-    private static final boolean SCREEN_OFF_MOTION_WAKE_ENABLED = true;
+    // Retained as an experimental fallback, but deliberately excluded from presence and
+    // wake decisions: switching the display or room lights can look exactly like motion.
+    private static final boolean SCREEN_OFF_MOTION_WAKE_ENABLED = false;
     private static final int LUMA_DIFFERENCE_THRESHOLD = 18;
     private static final float MOTION_SAMPLE_RATIO = 0.025f;
     private static final int LIGHTING_SHIFT_THRESHOLD = 6;
@@ -74,8 +76,9 @@ public final class PresenceDetectionService extends LifecycleService
     private static final float LIGHTING_DIRECTION_RATIO = 0.90f;
     private static final long FACE_DETECTOR_RETRY_MS = 5_000L;
     private static final long POSE_DETECTOR_RETRY_MS = 5_000L;
-    private static final int MIN_CONFIDENT_POSE_LANDMARKS = 5;
-    private static final float MIN_POSE_LANDMARK_CONFIDENCE = 0.5f;
+    private static final int MIN_CONFIDENT_POSE_LANDMARKS = 8;
+    private static final int MIN_CONFIDENT_TORSO_LANDMARKS = 3;
+    private static final float MIN_POSE_LANDMARK_CONFIDENCE = 0.65f;
     private static final String TAG = "MijiaPanelPresence";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -87,7 +90,7 @@ public final class PresenceDetectionService extends LifecycleService
         public void onReceive(Context context, Intent intent) {
             if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
                 long now = SystemClock.elapsedRealtime();
-                lastScreenOffElapsed = now;
+                screenStateGeneration++;
                 // Activity.onPause and ACTION_SCREEN_OFF are not delivered in a fixed order.
                 // Latch the panel session so the front camera remains available to wake the
                 // display even when the Activity has already reported itself as paused.
@@ -96,6 +99,7 @@ public final class PresenceDetectionService extends LifecycleService
                     panelScreenOffSession = true;
                 }
             } else if (Intent.ACTION_SCREEN_ON.equals(intent.getAction())) {
+                screenStateGeneration++;
                 boolean returningToPanel = panelScreenOffSession || panelActive;
                 panelScreenOffSession = false;
                 if (returningToPanel && cameraBound) {
@@ -174,13 +178,20 @@ public final class PresenceDetectionService extends LifecycleService
     private int cameraGeneration;
     private Boolean publishedPresence;
     private volatile long lastPresenceElapsed;
-    private volatile long lastScreenOffElapsed;
     private volatile long lastScreenOffRequestElapsed;
     private volatile long lastPanelActiveElapsed;
     private volatile boolean panelActive;
     private volatile boolean panelScreenOffSession;
     private volatile String panelStateToken;
     private volatile boolean startedBySystemBridge;
+    private final IBinder systemBridgeBinder = new Binder();
+    private volatile int screenStateGeneration;
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        super.onBind(intent);
+        return systemBridgeBinder;
+    }
 
     @Override
     public void onCreate() {
@@ -510,6 +521,31 @@ public final class PresenceDetectionService extends LifecycleService
         if (powerManager == null || powerManager.isInteractive()) {
             return;
         }
+        String token = panelStateToken;
+        if (token != null && !token.isEmpty()) {
+            try {
+                Intent intent = new Intent(BrightnessSettings.SYSTEM_BRIDGE_ACTION)
+                        .setPackage("android")
+                        .putExtra(
+                                BrightnessSettings.EXTRA_SYSTEM_BRIDGE_COMMAND,
+                                BrightnessSettings.SYSTEM_BRIDGE_COMMAND_WAKE_UP)
+                        .putExtra(BrightnessSettings.EXTRA_SYSTEM_BRIDGE_TOKEN, token);
+                sendBroadcast(intent);
+                mainHandler.postDelayed(this::wakeScreenLocallyIfNeeded, 750L);
+                return;
+            } catch (Throwable error) {
+                Log.w(TAG, "Unable to request system-bridge wake", error);
+            }
+        }
+        wakeScreenLocallyIfNeeded();
+    }
+
+    @SuppressWarnings("deprecation")
+    private void wakeScreenLocallyIfNeeded() {
+        PowerManager powerManager = getSystemService(PowerManager.class);
+        if (powerManager == null || powerManager.isInteractive()) {
+            return;
+        }
         PowerManager.WakeLock wakeLock = powerManager.newWakeLock(
                 PowerManager.SCREEN_BRIGHT_WAKE_LOCK
                         | PowerManager.ACQUIRE_CAUSES_WAKEUP
@@ -642,7 +678,7 @@ public final class PresenceDetectionService extends LifecycleService
                             .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
                             .setContourMode(FaceDetectorOptions.CONTOUR_MODE_NONE)
                             .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
-                            .setMinFaceSize(0.1f)
+                            .setMinFaceSize(0.05f)
                             .enableTracking()
                             .build());
             return faceDetector;
@@ -677,13 +713,29 @@ public final class PresenceDetectionService extends LifecycleService
     private static boolean containsConfidentPose(
             java.util.List<PoseLandmark> landmarks) {
         int confidentLandmarks = 0;
+        int confidentTorsoLandmarks = 0;
+        boolean hasShoulder = false;
+        boolean hasHip = false;
         for (PoseLandmark landmark : landmarks) {
-            if (landmark.getInFrameLikelihood() >= MIN_POSE_LANDMARK_CONFIDENCE
-                    && ++confidentLandmarks >= MIN_CONFIDENT_POSE_LANDMARKS) {
-                return true;
+            if (landmark.getInFrameLikelihood() < MIN_POSE_LANDMARK_CONFIDENCE) {
+                continue;
+            }
+            confidentLandmarks++;
+            int type = landmark.getLandmarkType();
+            if (type == PoseLandmark.LEFT_SHOULDER
+                    || type == PoseLandmark.RIGHT_SHOULDER) {
+                hasShoulder = true;
+                confidentTorsoLandmarks++;
+            } else if (type == PoseLandmark.LEFT_HIP
+                    || type == PoseLandmark.RIGHT_HIP) {
+                hasHip = true;
+                confidentTorsoLandmarks++;
             }
         }
-        return false;
+        return confidentLandmarks >= MIN_CONFIDENT_POSE_LANDMARKS
+                && confidentTorsoLandmarks >= MIN_CONFIDENT_TORSO_LANDMARKS
+                && hasShoulder
+                && hasHip;
     }
 
     private final class PresenceAnalyzer implements ImageAnalysis.Analyzer {
@@ -697,23 +749,27 @@ public final class PresenceDetectionService extends LifecycleService
         @Override
         public void analyze(@NonNull ImageProxy imageProxy) {
             try {
+                long now = SystemClock.elapsedRealtime();
+                boolean frameCapturedWhileScreenOff = !isDeviceInteractive();
+                int frameScreenGeneration = screenStateGeneration;
                 boolean screenOffMotionWake = SCREEN_OFF_MOTION_WAKE_ENABLED
-                        && !isDeviceInteractive();
+                        && frameCapturedWhileScreenOff;
                 if (screenOffMotionWake && detectMotion(imageProxy)) {
                     consecutiveMotionFrames++;
                     if (consecutiveMotionFrames >= MOTION_REQUIRED_FRAMES) {
-                        boolean outsideScreenOffGuard = SystemClock.elapsedRealtime()
-                                - lastScreenOffElapsed >= SCREEN_OFF_MOTION_GUARD_MS;
-                        if (outsideScreenOffGuard) {
-                            markPresence("luma motion", true);
-                        }
+                        markPresence("luma motion", true);
                     }
                 } else if (SCREEN_OFF_MOTION_WAKE_ENABLED) {
                     consecutiveMotionFrames = 0;
                 }
-                long now = SystemClock.elapsedRealtime();
-                boolean faceDue = now - lastFaceStartedElapsed >= FACE_INTERVAL_MS;
-                boolean poseDue = now - lastPoseStartedElapsed >= POSE_INTERVAL_MS;
+                long faceInterval = frameCapturedWhileScreenOff
+                        ? SCREEN_OFF_FACE_INTERVAL_MS
+                        : FACE_INTERVAL_MS;
+                long poseInterval = frameCapturedWhileScreenOff
+                        ? SCREEN_OFF_POSE_INTERVAL_MS
+                        : POSE_INTERVAL_MS;
+                boolean faceDue = now - lastFaceStartedElapsed >= faceInterval;
+                boolean poseDue = now - lastPoseStartedElapsed >= poseInterval;
                 boolean runFace = faceDue
                         && faceDetectionRunning.compareAndSet(false, true);
                 boolean runPose = poseDue
@@ -745,7 +801,11 @@ public final class PresenceDetectionService extends LifecycleService
                                                 Log.w(TAG, "Face detector currently reports "
                                                         + faces.size() + " face(s)");
                                             }
-                                            markPresence("face", true);
+                                            markPresence(
+                                                    "face",
+                                                    shouldWakeForFrame(
+                                                            frameCapturedWhileScreenOff,
+                                                            frameScreenGeneration));
                                         }
                                     })
                                     .addOnFailureListener(error ->
@@ -776,7 +836,11 @@ public final class PresenceDetectionService extends LifecycleService
                                                 Log.w(TAG,
                                                         "Pose detector currently reports a person");
                                             }
-                                            markPresence("pose", true);
+                                            markPresence(
+                                                    "pose",
+                                                    shouldWakeForFrame(
+                                                            frameCapturedWhileScreenOff,
+                                                            frameScreenGeneration));
                                         }
                                     })
                                     .addOnFailureListener(error ->
@@ -845,6 +909,14 @@ public final class PresenceDetectionService extends LifecycleService
         private boolean isDeviceInteractive() {
             PowerManager powerManager = getSystemService(PowerManager.class);
             return powerManager == null || powerManager.isInteractive();
+        }
+
+        private boolean shouldWakeForFrame(
+                boolean capturedWhileScreenOff,
+                int capturedGeneration) {
+            return capturedWhileScreenOff
+                    && capturedGeneration == screenStateGeneration
+                    && !isDeviceInteractive();
         }
 
         private boolean detectMotion(ImageProxy imageProxy) {

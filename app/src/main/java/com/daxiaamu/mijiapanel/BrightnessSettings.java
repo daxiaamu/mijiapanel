@@ -29,6 +29,7 @@ final class BrightnessSettings {
     static final int SYSTEM_BRIDGE_COMMAND_START = 1;
     static final int SYSTEM_BRIDGE_COMMAND_GO_TO_SLEEP = 3;
     static final int SYSTEM_BRIDGE_COMMAND_PROBE = 4;
+    static final int SYSTEM_BRIDGE_COMMAND_WAKE_UP = 5;
     static final String PERSON_PRESENT = "person_present";
     static final int DEFAULT_BRIGHTNESS_PERCENT = 50;
     static final boolean DEFAULT_BURN_IN_PROTECTION = false;
