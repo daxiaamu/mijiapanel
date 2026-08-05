@@ -23,8 +23,8 @@ android {
         applicationId 'com.daxiaamu.mijiapanel'
         minSdk 26
         targetSdk 35
-        versionCode project.findProperty('versionCodeOverride')?.toInteger() ?: 9
-        versionName project.findProperty('versionNameOverride') ?: '1.1.0'
+        versionCode project.findProperty('versionCodeOverride')?.toInteger() ?: 10
+        versionName project.findProperty('versionNameOverride') ?: '1.1.1'
         buildConfigField 'long', 'BURN_IN_SHIFT_INTERVAL_MS', "${burnInShiftIntervalMs}L"
     }
 
