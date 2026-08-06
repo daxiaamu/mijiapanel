@@ -1,18 +1,18 @@
 {
-  "versionCode": 10,
-  "versionName": "1.1.1",
-  "tag": "10-1.1.1",
-  "title": "1.1.1",
-  "notes": "## 更新\n\n- 修复隐藏桌面图标后无法从 LSPosed 打开设置页的问题。",
-  "releaseUrl": "https://github.com/daxiaamu/mijiapanel/releases/tag/10-1.1.1",
+  "versionCode": 30,
+  "versionName": "1.2.0",
+  "tag": "30-1.2.0",
+  "title": "1.2.0",
+  "notes": "## 更新\r\n\r\n- 新增“人在检测”：无人时可按设置息屏或降低亮度，有人返回时恢复。\r\n- 支持设置无人判定时间。\r\n- 新增系统框架桥接，提升检测服务及息屏、亮屏的可靠性。\r\n- 人在检测仅在米家中控模式下运行，离开中控后停止使用前置摄像头。\r\n- “关于”新增捐赠入口。\r\n\r\n使用“人在检测”需要启用“系统框架”作用域并重启设备。",
+  "releaseUrl": "https://github.com/daxiaamu/mijiapanel/releases/tag/30-1.2.0",
   "apkUrls": [
-    "https://gh-proxy.com/https://github.com/daxiaamu/mijiapanel/releases/download/10-1.1.1/MijiaPanel-1.1.1-universal.apk",
-    "https://ghfast.top/https://github.com/daxiaamu/mijiapanel/releases/download/10-1.1.1/MijiaPanel-1.1.1-universal.apk",
-    "https://ghproxy.net/https://github.com/daxiaamu/mijiapanel/releases/download/10-1.1.1/MijiaPanel-1.1.1-universal.apk",
-    "https://gh.jasonzeng.dev/https://github.com/daxiaamu/mijiapanel/releases/download/10-1.1.1/MijiaPanel-1.1.1-universal.apk",
-    "https://xget.xi-xu.me/gh/daxiaamu/mijiapanel/releases/download/10-1.1.1/MijiaPanel-1.1.1-universal.apk",
-    "https://github.com/daxiaamu/mijiapanel/releases/download/10-1.1.1/MijiaPanel-1.1.1-universal.apk"
+    "https://gh-proxy.com/https://github.com/daxiaamu/mijiapanel/releases/download/30-1.2.0/MijiaPanel-1.2.0-universal.apk",
+    "https://ghfast.top/https://github.com/daxiaamu/mijiapanel/releases/download/30-1.2.0/MijiaPanel-1.2.0-universal.apk",
+    "https://ghproxy.net/https://github.com/daxiaamu/mijiapanel/releases/download/30-1.2.0/MijiaPanel-1.2.0-universal.apk",
+    "https://gh.jasonzeng.dev/https://github.com/daxiaamu/mijiapanel/releases/download/30-1.2.0/MijiaPanel-1.2.0-universal.apk",
+    "https://xget.xi-xu.me/gh/daxiaamu/mijiapanel/releases/download/30-1.2.0/MijiaPanel-1.2.0-universal.apk",
+    "https://github.com/daxiaamu/mijiapanel/releases/download/30-1.2.0/MijiaPanel-1.2.0-universal.apk"
   ],
-  "apkUrl": "https://github.com/daxiaamu/mijiapanel/releases/download/10-1.1.1/MijiaPanel-1.1.1-universal.apk",
-  "apkSha256": "3cc3fece9d660f22a48fd174cbe99d12e55e9202f2e6f74032140fce260eeb2e"
+  "apkUrl": "https://github.com/daxiaamu/mijiapanel/releases/download/30-1.2.0/MijiaPanel-1.2.0-universal.apk",
+  "apkSha256": "30a7fc2eb221f1f0a408fda57de341e19167bda339599da2c78313dfac496fe2"
 }
