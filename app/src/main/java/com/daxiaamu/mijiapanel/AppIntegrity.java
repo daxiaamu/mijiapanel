@@ -79,6 +79,33 @@ final class AppIntegrity {
         }
     }
 
+    /**
+     * Verifies the module APK supplied by the Xposed framework without querying it through
+     * the target application's PackageManager. Android package-visibility rules may hide the
+     * module package from Xiaomi Home even though LSPosed has already supplied its exact
+     * ApplicationInfo to this module instance.
+     */
+    static boolean verifyModuleApplication(ApplicationInfo applicationInfo) {
+        if (!BuildConfig.ENFORCE_INTEGRITY) {
+            return true;
+        }
+        try {
+            if (applicationInfo == null
+                    || !MODULE_PACKAGE.equals(applicationInfo.packageName)
+                    || applicationInfo.sourceDir == null
+                    || applicationInfo.sourceDir.isEmpty()) {
+                return reject("invalid Xposed module application info");
+            }
+            byte[] expected = decodeSha256(BuildConfig.EXPECTED_CERT_SHA256);
+            byte[] directCertificate = readSigningBlockCertificate(applicationInfo.sourceDir);
+            return directCertificate != null && matchesCertificate(directCertificate, expected)
+                    || reject("Xposed module APK signing block mismatch");
+        } catch (Throwable error) {
+            Log.e(TAG, "Xposed module APK verification could not complete", error);
+            return false;
+        }
+    }
+
     private static boolean reject(String reason) {
         Log.e(TAG, "Integrity verification rejected: " + reason);
         return false;

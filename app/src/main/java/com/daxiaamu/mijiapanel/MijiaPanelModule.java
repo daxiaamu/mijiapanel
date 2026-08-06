@@ -113,6 +113,7 @@ public final class MijiaPanelModule extends XposedModule {
     private final AtomicBoolean systemBridgeReceiverRegistered = new AtomicBoolean();
     private final AtomicBoolean systemBridgeIntegrityRejected = new AtomicBoolean();
     private final AtomicBoolean targetHooksInstalled = new AtomicBoolean();
+    private final AtomicBoolean panelLifecycleCallbacksRegistered = new AtomicBoolean();
     private final Object presenceServiceBindingLock = new Object();
     private final Handler systemBridgeHandler = new Handler(Looper.getMainLooper());
     private volatile Context systemBridgeContext;
@@ -667,12 +668,13 @@ public final class MijiaPanelModule extends XposedModule {
                     .setPriority(XposedInterface.PRIORITY_HIGHEST)
                     .intercept(chain -> {
                         Context base = (Context) chain.getArg(0);
-                        if (!AppIntegrity.verifyPackage(base, MODULE_PACKAGE)) {
+                        if (!AppIntegrity.verifyModuleApplication(getModuleApplicationInfo())) {
                             log(Log.ERROR, TAG,
                                     "Xiaomi Home hooks rejected by integrity policy");
                             return chain.proceed();
                         }
                         targetContext = base;
+                        registerPanelLifecycleCallbacks((Application) chain.getThisObject());
                         if (targetHooksInstalled.compareAndSet(false, true)) {
                             hookPadActivityContexts(loader);
                             hookCentralControlEntry(loader);
@@ -689,6 +691,79 @@ public final class MijiaPanelModule extends XposedModule {
         } catch (Throwable error) {
             logFailure("Unable to hook SHApplication.attachBaseContext", error);
         }
+    }
+
+    private void registerPanelLifecycleCallbacks(Application application) {
+        if (!isMainProcess()
+                || !panelLifecycleCallbacksRegistered.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            application.registerActivityLifecycleCallbacks(
+                    new Application.ActivityLifecycleCallbacks() {
+                        @Override
+                        public void onActivityCreated(Activity activity, Bundle state) {
+                        }
+
+                        @Override
+                        public void onActivityStarted(Activity activity) {
+                        }
+
+                        @Override
+                        public void onActivityResumed(Activity activity) {
+                            if (isPadActivity(activity)) {
+                                activePadActivity = new WeakReference<>(activity);
+                                publishPanelActive(activity, true);
+                                requestPresenceServiceBridge(activity);
+                            } else {
+                                publishPanelActive(activity, false);
+                            }
+                        }
+
+                        @Override
+                        public void onActivityPaused(Activity activity) {
+                            if (!isPadActivity(activity)) {
+                                return;
+                            }
+                            stopBurnInProtection(activity);
+                            activity.getWindow().getDecorView().postDelayed(
+                                    () -> {
+                                        if (!activity.isDestroyed()) {
+                                            boolean resumedAgain =
+                                                    activePadActivity.get() == activity
+                                                            && activity.hasWindowFocus();
+                                            publishPanelActive(
+                                                    activity,
+                                                    resumedAgain || !isDeviceInteractive(activity));
+                                        }
+                                    },
+                                    PANEL_PAUSE_STATE_DELAY_MS);
+                        }
+
+                        @Override
+                        public void onActivityStopped(Activity activity) {
+                        }
+
+                        @Override
+                        public void onActivitySaveInstanceState(Activity activity, Bundle state) {
+                        }
+
+                        @Override
+                        public void onActivityDestroyed(Activity activity) {
+                            if (isPadActivity(activity)) {
+                                publishPanelActive(activity, false);
+                                stopBurnInProtection(activity);
+                            }
+                        }
+                    });
+        } catch (Throwable error) {
+            panelLifecycleCallbacksRegistered.set(false);
+            logFailure("Unable to register panel lifecycle callbacks", error);
+        }
+    }
+
+    private static boolean isPadActivity(Activity activity) {
+        return activity != null && PAD_MAIN.equals(activity.getClass().getName());
     }
 
     private void registerDebugReceiver(Context context) {
