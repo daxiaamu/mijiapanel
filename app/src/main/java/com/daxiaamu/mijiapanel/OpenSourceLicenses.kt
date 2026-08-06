@@ -43,7 +43,7 @@ private val openSourceProjects = listOf(
         licenseUrl = "https://github.com/daxiaamu/mijiapanel/blob/main/LICENSE",
     ),
     OpenSourceProject(
-        name = "AndroidX / Jetpack Compose / Material 3",
+        name = "AndroidX / Jetpack Compose / Material 3 / CameraX",
         role = R.string.open_source_role_dependency,
         license = "Apache License 2.0",
         projectUrl = "https://github.com/androidx/androidx",
@@ -69,6 +69,13 @@ private val openSourceProjects = listOf(
         license = "Apache License 2.0 / GNU LGPL v3.0",
         projectUrl = "https://github.com/LuckyPray/DexKit",
         licenseUrl = "https://github.com/LuckyPray/DexKit/blob/master/LICENSE",
+    ),
+    OpenSourceProject(
+        name = "Google ML Kit Face Detection",
+        role = R.string.open_source_role_third_party,
+        license = "ML Kit Terms of Service",
+        projectUrl = "https://developers.google.com/ml-kit/vision/face-detection/android",
+        licenseUrl = "https://developers.google.com/ml-kit/terms",
     ),
 )
 

@@ -13,6 +13,31 @@
     <string name="burn_in_protection_summary">每隔3分钟轻微随机移动中控界面，能一定程度缓解烧屏</string>
     <string name="draw_in_display_cutout">不避让水滴屏</string>
     <string name="draw_in_display_cutout_summary">允许中控界面延伸至水滴、刘海等屏幕开孔区域</string>
+    <string name="presence_detection">人在检测</string>
+    <string name="presence_detection_summary">无人时息屏或压暗亮度，减缓屏幕老化及耗电。建议搭配“开发者选项——不使用锁屏”使用，效果更佳。</string>
+    <string name="absence_delay">无人判定时间</string>
+    <string name="absence_delay_summary">持续无人%1$s后执行“无人时”设置</string>
+    <string name="absence_behavior">无人时</string>
+    <string name="absence_behavior_summary">选择判定无人后的中控显示状态</string>
+    <string name="absence_screen_off">息屏</string>
+    <string name="absence_minimum_brightness">最低亮度</string>
+    <string name="duration_seconds">%1$d秒</string>
+    <string name="duration_minutes">%1$d分钟</string>
+    <string name="duration_minutes_seconds">%1$d分%2$d秒</string>
+    <string name="presence_camera_permission_required">需要前置摄像头权限才能检测是否有人</string>
+    <string name="presence_camera_permission_action">未授予摄像头权限，点击前往授权</string>
+    <string name="presence_framework_scope_required">人在检测需要在 LSPosed 模块作用域中勾选“系统框架”</string>
+    <string name="presence_framework_scope_action">未启用“系统框架”作用域，点击授权</string>
+    <string name="presence_framework_scope_requesting">正在请求“系统框架”作用域…</string>
+    <string name="presence_framework_scope_failed">作用域同步失败，请点击重试或前往 LSPosed 手动勾选</string>
+    <string name="presence_framework_reboot_required">“系统框架”作用域已启用，请重启设备后生效</string>
+    <string name="presence_notification_channel">人在检测</string>
+    <string name="presence_notification_title">正在检测中控前是否有人</string>
+    <string name="presence_notification_summary">检测仅在本机进行，不会保存或上传画面</string>
+    <string name="lock_screen_reminder_channel">自动亮屏设置</string>
+    <string name="lock_screen_reminder_title">请取消系统锁屏</string>
+    <string name="lock_screen_reminder_summary">要在人来时直接显示中控，请将锁屏方式设为“无”，包括取消“滑动”锁屏</string>
+    <string name="open_lock_screen_settings">前往锁屏设置</string>
 
     <string name="app_settings">应用设置</string>
     <string name="show_launcher_icon">显示桌面图标</string>
@@ -20,9 +45,13 @@
     <string name="launcher_icon_shown">桌面图标已显示</string>
     <string name="launcher_icon_hidden">桌面图标已隐藏</string>
 
+    <string name="integrity_failure_title">应用完整性验证失败</string>
+    <string name="integrity_failure_message">安装包签名或内容与正式版本不一致。请卸载当前版本，并从官方发布页重新安装。</string>
+    <string name="integrity_failure_exit">退出</string>
+
     <string name="app_update">应用更新</string>
     <string name="current_version">当前版本：%1$s</string>
-    <string name="update_auto_check_summary">每次打开设置时自动检查更新</string>
+    <string name="update_auto_check_summary">点击按钮检查更新</string>
     <string name="update_checking">正在检查更新…</string>
     <string name="update_check_action">检查更新</string>
     <string name="update_already_latest">已是最新版本（%1$s）</string>
@@ -43,9 +72,14 @@
     <string name="update_download_ready">更新已下载，点击安装</string>
 
     <string name="about">关于</string>
-    <string name="developer_name">大侠阿木</string>
-    <string name="developer_description">MijiaPanel开发者</string>
-    <string name="repository_name">daxiaamu/mijiapanel</string>
+    <string name="developer_donation">大侠阿木</string>
+    <string name="developer_donation_summary">点击捐赠，支持他的开发工作。</string>
+    <string name="developer_blog">大侠阿木博客</string>
+    <string name="developer_blog_summary">访问大侠阿木的个人博客</string>
+    <string name="developer_github">大侠阿木 GitHub</string>
+    <string name="developer_github_summary">查看大侠阿木的 GitHub 主页</string>
+    <string name="view_source_code">查看源代码</string>
+    <string name="view_source_code_summary">在 GitHub 上查看 MijiaPanel 源代码</string>
     <string name="open_source_licenses">开放源代码许可</string>
     <string name="open_source_licenses_summary">查看本应用及所使用组件的许可与条款</string>
     <string name="open_source_role_app">本应用</string>

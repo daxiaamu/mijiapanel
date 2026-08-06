@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
@@ -55,6 +60,13 @@
             android:exported="false"
             android:theme="@android:style/Theme.NoDisplay" />
 
+        <activity
+            android:name=".IntegrityFailureActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:finishOnTaskLaunch="false"
+            android:theme="@style/Theme.MijiaPanel" />
+
         <receiver
             android:name=".update.UpdateDownloadReceiver"
             android:exported="true">
@@ -62,5 +74,19 @@
                 <action android:name="android.intent.action.DOWNLOAD_COMPLETE" />
             </intent-filter>
         </receiver>
+
+        <receiver
+            android:name=".LockScreenReminderReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".PresenceDetectionService"
+            android:exported="true"
+            android:permission="android.permission.START_FOREGROUND_SERVICES_FROM_BACKGROUND"
+            android:foregroundServiceType="camera" />
     </application>
 </manifest>
