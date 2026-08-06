@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonSearch
