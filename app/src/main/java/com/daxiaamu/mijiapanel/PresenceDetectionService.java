@@ -12,7 +12,6 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
-import android.media.Image;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Binder;
@@ -39,16 +38,12 @@ import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.face.FaceDetection;
 import com.google.mlkit.vision.face.FaceDetector;
 import com.google.mlkit.vision.face.FaceDetectorOptions;
-import com.google.mlkit.vision.pose.PoseDetection;
-import com.google.mlkit.vision.pose.PoseDetector;
-import com.google.mlkit.vision.pose.PoseLandmark;
-import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions;
 
 import java.nio.ByteBuffer;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Runs low-rate, on-device front-camera analysis while Xiaomi Home's panel is visible.
@@ -59,32 +54,27 @@ public final class PresenceDetectionService extends LifecycleService
     private static final String CHANNEL_ID = "presence_detection";
     private static final int NOTIFICATION_ID = 2101;
     private static final long FACE_INTERVAL_MS = 1_000L;
-    private static final long POSE_INTERVAL_MS = 1_500L;
     private static final long SCREEN_OFF_FACE_INTERVAL_MS = 350L;
-    private static final long SCREEN_OFF_POSE_INTERVAL_MS = 700L;
     private static final long STATE_TICK_MS = 2_000L;
     private static final long SCREEN_OFF_REQUEST_RETRY_MS = 5_000L;
     private static final long PANEL_SCREEN_OFF_HANDOFF_MS = 5_000L;
     private static final int MOTION_REQUIRED_FRAMES = 2;
-    // Retained as an experimental fallback, but deliberately excluded from presence and
-    // wake decisions: switching the display or room lights can look exactly like motion.
-    private static final boolean SCREEN_OFF_MOTION_WAKE_ENABLED = false;
+    private static final long FACE_REQUEST_IDLE = 0L;
+    private static final long FACE_REQUEST_RESETTING = -1L;
     private static final int LUMA_DIFFERENCE_THRESHOLD = 18;
     private static final float MOTION_SAMPLE_RATIO = 0.025f;
     private static final int LIGHTING_SHIFT_THRESHOLD = 6;
     private static final float LIGHTING_CHANGED_RATIO = 0.75f;
     private static final float LIGHTING_DIRECTION_RATIO = 0.90f;
     private static final long FACE_DETECTOR_RETRY_MS = 5_000L;
-    private static final long POSE_DETECTOR_RETRY_MS = 5_000L;
-    private static final int MIN_CONFIDENT_POSE_LANDMARKS = 8;
-    private static final int MIN_CONFIDENT_TORSO_LANDMARKS = 3;
-    private static final float MIN_POSE_LANDMARK_CONFIDENCE = 0.65f;
+    private static final long FACE_DETECTION_TIMEOUT_MS = 5_000L;
     private static final String TAG = "MijiaPanelPresence";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService analysisExecutor = Executors.newSingleThreadExecutor();
-    private final AtomicBoolean faceDetectionRunning = new AtomicBoolean();
-    private final AtomicBoolean poseDetectionRunning = new AtomicBoolean();
+    private final AtomicLong faceRequestSequence = new AtomicLong();
+    private final AtomicLong activeFaceRequest = new AtomicLong();
+    private final Object faceDetectorLock = new Object();
     private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -169,10 +159,8 @@ public final class PresenceDetectionService extends LifecycleService
     private ProcessCameraProvider cameraProvider;
     private ImageAnalysis imageAnalysis;
     private FaceDetector faceDetector;
-    private PoseDetector poseDetector;
     private PowerManager.WakeLock analysisWakeLock;
     private long lastFaceDetectorInitAttemptElapsed;
-    private long lastPoseDetectorInitAttemptElapsed;
     private boolean cameraStarting;
     private boolean cameraBound;
     private int cameraGeneration;
@@ -184,6 +172,7 @@ public final class PresenceDetectionService extends LifecycleService
     private volatile boolean panelScreenOffSession;
     private volatile String panelStateToken;
     private volatile boolean startedBySystemBridge;
+    private boolean initialized;
     private final IBinder systemBridgeBinder = new Binder();
     private volatile int screenStateGeneration;
 
@@ -197,8 +186,13 @@ public final class PresenceDetectionService extends LifecycleService
     public void onCreate() {
         super.onCreate();
         application = (MijiaPanelApplication) getApplication();
-        application.addServiceListener(this);
         startCameraForeground();
+        if (!application.isIntegrityTrusted() || !AppIntegrity.verify(this)) {
+            Log.e(TAG, "Presence service rejected by integrity policy");
+            stopSelf();
+            return;
+        }
+        application.addServiceListener(this);
         IntentFilter screenFilter = new IntentFilter(Intent.ACTION_SCREEN_OFF);
         screenFilter.addAction(Intent.ACTION_SCREEN_ON);
         ContextCompat.registerReceiver(
@@ -211,6 +205,7 @@ public final class PresenceDetectionService extends LifecycleService
                 panelStateReceiver,
                 new IntentFilter(BrightnessSettings.PANEL_STATE_ACTION),
                 ContextCompat.RECEIVER_EXPORTED);
+        initialized = true;
         mainHandler.post(stateTick);
     }
 
@@ -378,6 +373,7 @@ public final class PresenceDetectionService extends LifecycleService
         }
         cameraStarting = true;
         int generation = ++cameraGeneration;
+        activeFaceRequest.compareAndSet(FACE_REQUEST_RESETTING, FACE_REQUEST_IDLE);
         ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(this);
         future.addListener(() -> {
             try {
@@ -448,6 +444,7 @@ public final class PresenceDetectionService extends LifecycleService
         ++cameraGeneration;
         cameraStarting = false;
         cameraBound = false;
+        activeFaceRequest.set(FACE_REQUEST_RESETTING);
         if (imageAnalysis != null) {
             imageAnalysis.clearAnalyzer();
             imageAnalysis = null;
@@ -455,6 +452,10 @@ public final class PresenceDetectionService extends LifecycleService
         if (cameraProvider != null) {
             cameraProvider.unbindAll();
             cameraProvider = null;
+        }
+        closeFaceDetector();
+        synchronized (faceDetectorLock) {
+            lastFaceDetectorInitAttemptElapsed = 0L;
         }
         releaseAnalysisWakeLock();
         lastPresenceElapsed = 0L;
@@ -646,217 +647,183 @@ public final class PresenceDetectionService extends LifecycleService
     public void onDestroy() {
         mainHandler.removeCallbacks(stateTick);
         stopCamera();
-        unregisterReceiver(screenReceiver);
-        unregisterReceiver(panelStateReceiver);
-        if (remotePreferences != null) {
-            remotePreferences.unregisterOnSharedPreferenceChangeListener(preferenceListener);
+        if (initialized) {
+            unregisterReceiver(screenReceiver);
+            unregisterReceiver(panelStateReceiver);
+            if (remotePreferences != null) {
+                remotePreferences.unregisterOnSharedPreferenceChangeListener(preferenceListener);
+            }
+            application.removeServiceListener(this);
         }
-        application.removeServiceListener(this);
         analysisExecutor.shutdownNow();
-        if (faceDetector != null) {
-            faceDetector.close();
-        }
-        if (poseDetector != null) {
-            poseDetector.close();
-        }
         super.onDestroy();
     }
 
     private FaceDetector getOrCreateFaceDetector() {
-        if (faceDetector != null) {
-            return faceDetector;
-        }
-        long now = SystemClock.elapsedRealtime();
-        if (now - lastFaceDetectorInitAttemptElapsed < FACE_DETECTOR_RETRY_MS) {
-            return null;
-        }
-        lastFaceDetectorInitAttemptElapsed = now;
-        try {
-            faceDetector = FaceDetection.getClient(
-                    new FaceDetectorOptions.Builder()
-                            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-                            .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
-                            .setContourMode(FaceDetectorOptions.CONTOUR_MODE_NONE)
-                            .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
-                            .setMinFaceSize(0.05f)
-                            .enableTracking()
-                            .build());
-            return faceDetector;
-        } catch (Throwable error) {
-            Log.w(TAG, "Face detector initialization failed; motion detection remains active", error);
-            return null;
+        synchronized (faceDetectorLock) {
+            if (faceDetector != null) {
+                return faceDetector;
+            }
+            long now = SystemClock.elapsedRealtime();
+            if (now - lastFaceDetectorInitAttemptElapsed < FACE_DETECTOR_RETRY_MS) {
+                return null;
+            }
+            lastFaceDetectorInitAttemptElapsed = now;
+            try {
+                faceDetector = FaceDetection.getClient(
+                        new FaceDetectorOptions.Builder()
+                                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
+                                .setContourMode(FaceDetectorOptions.CONTOUR_MODE_NONE)
+                                .setClassificationMode(
+                                        FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
+                                .setMinFaceSize(0.05f)
+                                .enableTracking()
+                                .build());
+                return faceDetector;
+            } catch (Throwable error) {
+                Log.w(TAG, "Face detector initialization failed; will retry", error);
+                return null;
+            }
         }
     }
 
-    private PoseDetector getOrCreatePoseDetector() {
-        if (poseDetector != null) {
-            return poseDetector;
+    private void closeFaceDetector() {
+        FaceDetector detector;
+        synchronized (faceDetectorLock) {
+            detector = faceDetector;
+            faceDetector = null;
         }
-        long now = SystemClock.elapsedRealtime();
-        if (now - lastPoseDetectorInitAttemptElapsed < POSE_DETECTOR_RETRY_MS) {
-            return null;
-        }
-        lastPoseDetectorInitAttemptElapsed = now;
-        try {
-            poseDetector = PoseDetection.getClient(
-                    new PoseDetectorOptions.Builder()
-                            .setDetectorMode(PoseDetectorOptions.STREAM_MODE)
-                            .build());
-            return poseDetector;
-        } catch (Throwable error) {
-            Log.w(TAG, "Pose detector initialization failed; face and motion remain active",
-                    error);
-            return null;
+        if (detector != null) {
+            try {
+                detector.close();
+            } catch (Throwable error) {
+                Log.w(TAG, "Unable to close face detector", error);
+            }
         }
     }
 
-    private static boolean containsConfidentPose(
-            java.util.List<PoseLandmark> landmarks) {
-        int confidentLandmarks = 0;
-        int confidentTorsoLandmarks = 0;
-        boolean hasShoulder = false;
-        boolean hasHip = false;
-        for (PoseLandmark landmark : landmarks) {
-            if (landmark.getInFrameLikelihood() < MIN_POSE_LANDMARK_CONFIDENCE) {
-                continue;
+    private void scheduleFaceDetectionTimeout(long requestId) {
+        mainHandler.postDelayed(() -> {
+            if (!activeFaceRequest.compareAndSet(requestId, FACE_REQUEST_RESETTING)) {
+                return;
             }
-            confidentLandmarks++;
-            int type = landmark.getLandmarkType();
-            if (type == PoseLandmark.LEFT_SHOULDER
-                    || type == PoseLandmark.RIGHT_SHOULDER) {
-                hasShoulder = true;
-                confidentTorsoLandmarks++;
-            } else if (type == PoseLandmark.LEFT_HIP
-                    || type == PoseLandmark.RIGHT_HIP) {
-                hasHip = true;
-                confidentTorsoLandmarks++;
+            Log.w(TAG, "Face detection timed out; rebuilding detector");
+            closeFaceDetector();
+            synchronized (faceDetectorLock) {
+                lastFaceDetectorInitAttemptElapsed = 0L;
             }
-        }
-        return confidentLandmarks >= MIN_CONFIDENT_POSE_LANDMARKS
-                && confidentTorsoLandmarks >= MIN_CONFIDENT_TORSO_LANDMARKS
-                && hasShoulder
-                && hasHip;
+            activeFaceRequest.compareAndSet(FACE_REQUEST_RESETTING, FACE_REQUEST_IDLE);
+        }, FACE_DETECTION_TIMEOUT_MS);
     }
 
     private final class PresenceAnalyzer implements ImageAnalysis.Analyzer {
         private byte[] previousLuma;
         private long lastFaceStartedElapsed;
-        private long lastPoseStartedElapsed;
         private long lastFaceHitLogElapsed;
-        private long lastPoseHitLogElapsed;
         private int consecutiveMotionFrames;
+        private int lastLumaScreenGeneration = Integer.MIN_VALUE;
 
         @Override
         public void analyze(@NonNull ImageProxy imageProxy) {
+            long claimedFaceRequest = 0L;
             try {
                 long now = SystemClock.elapsedRealtime();
                 boolean frameCapturedWhileScreenOff = !isDeviceInteractive();
                 int frameScreenGeneration = screenStateGeneration;
-                boolean screenOffMotionWake = SCREEN_OFF_MOTION_WAKE_ENABLED
-                        && frameCapturedWhileScreenOff;
-                if (screenOffMotionWake && detectMotion(imageProxy)) {
+                int frameCameraGeneration = cameraGeneration;
+                if (lastLumaScreenGeneration != frameScreenGeneration) {
+                    lastLumaScreenGeneration = frameScreenGeneration;
+                    previousLuma = null;
+                    consecutiveMotionFrames = 0;
+                }
+                if (!frameCapturedWhileScreenOff && detectMotion(imageProxy)) {
                     consecutiveMotionFrames++;
                     if (consecutiveMotionFrames >= MOTION_REQUIRED_FRAMES) {
-                        markPresence("luma motion", true);
+                        markPresence("luma motion", false);
                     }
-                } else if (SCREEN_OFF_MOTION_WAKE_ENABLED) {
+                } else {
                     consecutiveMotionFrames = 0;
                 }
                 long faceInterval = frameCapturedWhileScreenOff
                         ? SCREEN_OFF_FACE_INTERVAL_MS
                         : FACE_INTERVAL_MS;
-                long poseInterval = frameCapturedWhileScreenOff
-                        ? SCREEN_OFF_POSE_INTERVAL_MS
-                        : POSE_INTERVAL_MS;
                 boolean faceDue = now - lastFaceStartedElapsed >= faceInterval;
-                boolean poseDue = now - lastPoseStartedElapsed >= poseInterval;
-                boolean runFace = faceDue
-                        && faceDetectionRunning.compareAndSet(false, true);
-                boolean runPose = poseDue
-                        && poseDetectionRunning.compareAndSet(false, true);
-                if (runFace || runPose) {
+                if (faceDue
+                        && cameraBound
+                        && frameCameraGeneration == cameraGeneration) {
+                    long requestId = faceRequestSequence.incrementAndGet();
+                    if (activeFaceRequest.compareAndSet(FACE_REQUEST_IDLE, requestId)) {
+                        claimedFaceRequest = requestId;
+                    }
+                }
+                if (claimedFaceRequest != 0L) {
+                    final long requestId = claimedFaceRequest;
                     int width = imageProxy.getWidth();
                     int height = imageProxy.getHeight();
                     int rotation = imageProxy.getImageInfo().getRotationDegrees();
                     byte[] nv21 = copyToNv21(imageProxy);
                     imageProxy.close();
-                    if (runFace) {
-                        FaceDetector detector = getOrCreateFaceDetector();
-                        if (detector == null) {
-                            faceDetectionRunning.set(false);
-                        } else {
-                            lastFaceStartedElapsed = now;
-                            InputImage input = InputImage.fromByteArray(
-                                    nv21,
-                                    width,
-                                    height,
-                                    rotation,
-                                    InputImage.IMAGE_FORMAT_NV21);
-                            detector.process(input)
-                                    .addOnSuccessListener(faces -> {
-                                        if (!faces.isEmpty()) {
-                                            long hitNow = SystemClock.elapsedRealtime();
-                                            if (hitNow - lastFaceHitLogElapsed >= 5_000L) {
-                                                lastFaceHitLogElapsed = hitNow;
-                                                Log.w(TAG, "Face detector currently reports "
-                                                        + faces.size() + " face(s)");
-                                            }
-                                            markPresence(
-                                                    "face",
-                                                    shouldWakeForFrame(
-                                                            frameCapturedWhileScreenOff,
-                                                            frameScreenGeneration));
+                    FaceDetector detector = getOrCreateFaceDetector();
+                    if (detector == null) {
+                        activeFaceRequest.compareAndSet(requestId, FACE_REQUEST_IDLE);
+                    } else {
+                        lastFaceStartedElapsed = now;
+                        scheduleFaceDetectionTimeout(requestId);
+                        InputImage input = InputImage.fromByteArray(
+                                nv21,
+                                width,
+                                height,
+                                rotation,
+                                InputImage.IMAGE_FORMAT_NV21);
+                        detector.process(input)
+                                .addOnSuccessListener(faces -> {
+                                    if (!faces.isEmpty()
+                                            && isCurrentFaceResult(
+                                                    requestId,
+                                                    frameCameraGeneration,
+                                                    frameScreenGeneration)) {
+                                        long hitNow = SystemClock.elapsedRealtime();
+                                        if (hitNow - lastFaceHitLogElapsed >= 5_000L) {
+                                            lastFaceHitLogElapsed = hitNow;
+                                            Log.w(TAG, "Face detector currently reports "
+                                                    + faces.size() + " face(s)");
                                         }
-                                    })
-                                    .addOnFailureListener(error ->
-                                            Log.w(TAG, "Face detection failed", error))
-                                    .addOnCompleteListener(task ->
-                                            faceDetectionRunning.set(false));
-                        }
-                    }
-                    if (runPose) {
-                        PoseDetector detector = getOrCreatePoseDetector();
-                        if (detector == null) {
-                            poseDetectionRunning.set(false);
-                        } else {
-                            lastPoseStartedElapsed = now;
-                            InputImage input = InputImage.fromByteArray(
-                                    nv21,
-                                    width,
-                                    height,
-                                    rotation,
-                                    InputImage.IMAGE_FORMAT_NV21);
-                            detector.process(input)
-                                    .addOnSuccessListener(pose -> {
-                                        if (containsConfidentPose(
-                                                pose.getAllPoseLandmarks())) {
-                                            long hitNow = SystemClock.elapsedRealtime();
-                                            if (hitNow - lastPoseHitLogElapsed >= 5_000L) {
-                                                lastPoseHitLogElapsed = hitNow;
-                                                Log.w(TAG,
-                                                        "Pose detector currently reports a person");
-                                            }
-                                            markPresence(
-                                                    "pose",
-                                                    shouldWakeForFrame(
-                                                            frameCapturedWhileScreenOff,
-                                                            frameScreenGeneration));
-                                        }
-                                    })
-                                    .addOnFailureListener(error ->
-                                            Log.w(TAG, "Pose detection failed", error))
-                                    .addOnCompleteListener(task ->
-                                            poseDetectionRunning.set(false));
-                        }
+                                        markPresence(
+                                                "face",
+                                                shouldWakeForFrame(
+                                                        frameCapturedWhileScreenOff,
+                                                        frameScreenGeneration));
+                                    }
+                                })
+                                .addOnFailureListener(error ->
+                                        Log.w(TAG, "Face detection failed", error))
+                                .addOnCompleteListener(task ->
+                                        activeFaceRequest.compareAndSet(
+                                                requestId,
+                                                FACE_REQUEST_IDLE));
                     }
                     return;
                 }
             } catch (Throwable ignored) {
                 // A later frame can recover from transient camera or detector errors.
-                faceDetectionRunning.set(false);
-                poseDetectionRunning.set(false);
+                if (claimedFaceRequest != 0L) {
+                    activeFaceRequest.compareAndSet(
+                            claimedFaceRequest,
+                            FACE_REQUEST_IDLE);
+                }
             }
             imageProxy.close();
+        }
+
+        private boolean isCurrentFaceResult(
+                long requestId,
+                int capturedCameraGeneration,
+                int capturedScreenGeneration) {
+            return activeFaceRequest.get() == requestId
+                    && cameraBound
+                    && capturedCameraGeneration == cameraGeneration
+                    && capturedScreenGeneration == screenStateGeneration;
         }
 
         private byte[] copyToNv21(ImageProxy imageProxy) {

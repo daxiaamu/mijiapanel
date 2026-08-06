@@ -29,6 +29,16 @@
                 <action android:name="de.robv.android.xposed.action.MODULE_SETTINGS" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+            <!--
+                PackageManager#getLaunchIntentForPackage checks CATEGORY_INFO before
+                CATEGORY_LAUNCHER. Keep this non-launcher entry available for module
+                managers even when LauncherAlias is disabled by the user.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.INFO" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
 
         <activity-alias
@@ -49,6 +59,13 @@
             android:excludeFromRecents="true"
             android:exported="false"
             android:theme="@android:style/Theme.NoDisplay" />
+
+        <activity
+            android:name=".IntegrityFailureActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:finishOnTaskLaunch="false"
+            android:theme="@style/Theme.MijiaPanel" />
 
         <receiver
             android:name=".update.UpdateDownloadReceiver"

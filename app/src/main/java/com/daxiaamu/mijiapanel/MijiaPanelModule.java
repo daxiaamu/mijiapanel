@@ -111,6 +111,8 @@ public final class MijiaPanelModule extends XposedModule {
     private final AtomicBoolean oplusStartupAllowanceHookInstalled = new AtomicBoolean();
     private final AtomicBoolean systemBridgeRetryScheduled = new AtomicBoolean();
     private final AtomicBoolean systemBridgeReceiverRegistered = new AtomicBoolean();
+    private final AtomicBoolean systemBridgeIntegrityRejected = new AtomicBoolean();
+    private final AtomicBoolean targetHooksInstalled = new AtomicBoolean();
     private final Object presenceServiceBindingLock = new Object();
     private final Handler systemBridgeHandler = new Handler(Looper.getMainLooper());
     private volatile Context systemBridgeContext;
@@ -476,10 +478,6 @@ public final class MijiaPanelModule extends XposedModule {
 
         ClassLoader loader = param.getClassLoader();
         captureApplicationContext(loader);
-        hookPadActivityContexts(loader);
-        hookCentralControlEntry(loader);
-        hookPadSystemBars(loader);
-        hookPadWakeLock();
     }
 
     private void hookSystemBridge(ClassLoader loader) {
@@ -600,6 +598,11 @@ public final class MijiaPanelModule extends XposedModule {
             scheduleSystemBridgeRetry(loader);
             return;
         }
+        if (!AppIntegrity.verifyPackage(context, MODULE_PACKAGE)) {
+            systemBridgeIntegrityRejected.set(true);
+            log(Log.ERROR, TAG, "Presence system bridge rejected by integrity policy");
+            return;
+        }
         if (!systemBridgeReceiverRegistered.compareAndSet(false, true)) {
             return;
         }
@@ -630,6 +633,10 @@ public final class MijiaPanelModule extends XposedModule {
 
             @Override
             public void run() {
+                if (systemBridgeIntegrityRejected.get()) {
+                    systemBridgeRetryScheduled.set(false);
+                    return;
+                }
                 if (systemBridgeReceiverRegistered.get()) {
                     systemBridgeRetryScheduled.set(false);
                     return;
@@ -660,7 +667,18 @@ public final class MijiaPanelModule extends XposedModule {
                     .setPriority(XposedInterface.PRIORITY_HIGHEST)
                     .intercept(chain -> {
                         Context base = (Context) chain.getArg(0);
+                        if (!AppIntegrity.verifyPackage(base, MODULE_PACKAGE)) {
+                            log(Log.ERROR, TAG,
+                                    "Xiaomi Home hooks rejected by integrity policy");
+                            return chain.proceed();
+                        }
                         targetContext = base;
+                        if (targetHooksInstalled.compareAndSet(false, true)) {
+                            hookPadActivityContexts(loader);
+                            hookCentralControlEntry(loader);
+                            hookPadSystemBars(loader);
+                            hookPadWakeLock();
+                        }
                         registerDebugReceiver(base);
                         registerPresenceStateReceiver(base);
                         ensureCompatibilityHooks(loader, base);

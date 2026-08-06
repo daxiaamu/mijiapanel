@@ -106,6 +106,7 @@ import kotlin.math.roundToInt
 
 class SettingsActivity : ComponentActivity() {
     private companion object {
+        const val DONATION_URL = "https://ifdian.net/a/daxiaamu"
         const val BLOG_URL = "https://www.daxiaamu.com"
         const val GITHUB_PROFILE_URL = "https://github.com/daxiaamu"
         const val REPOSITORY_URL = "https://github.com/daxiaamu/mijiapanel"
@@ -181,6 +182,11 @@ class SettingsActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!moduleApplication.isIntegrityTrusted || !AppIntegrity.verify(this)) {
+            IntegrityFailureActivity.open(this)
+            finish()
+            return
+        }
         enableEdgeToEdge()
         title = getString(R.string.settings_title)
         launcherIconVisible = isLauncherIconVisible()
@@ -197,6 +203,11 @@ class SettingsActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (!moduleApplication.isIntegrityTrusted || !AppIntegrity.verify(this)) {
+            IntegrityFailureActivity.open(this)
+            finish()
+            return
+        }
         refreshCameraPermissionState()
         refreshSystemFrameworkScopeState()
         refreshReadyDownload()
@@ -641,6 +652,15 @@ class SettingsActivity : ComponentActivity() {
 
                 item { SectionDivider() }
                 item { SectionTitle(getString(R.string.about)) }
+                item {
+                    AboutSetting(
+                        icon = Icons.Default.Favorite,
+                        title = getString(R.string.developer_donation),
+                        subtitle = getString(R.string.developer_donation_summary),
+                        external = true,
+                        onClick = { openUrl(DONATION_URL) },
+                    )
+                }
                 item {
                     AboutSetting(
                         icon = Icons.Default.Language,

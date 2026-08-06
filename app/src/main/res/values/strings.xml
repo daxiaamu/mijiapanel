@@ -45,6 +45,10 @@
     <string name="launcher_icon_shown">桌面图标已显示</string>
     <string name="launcher_icon_hidden">桌面图标已隐藏</string>
 
+    <string name="integrity_failure_title">应用完整性验证失败</string>
+    <string name="integrity_failure_message">安装包签名或内容与正式版本不一致。请卸载当前版本，并从官方发布页重新安装。</string>
+    <string name="integrity_failure_exit">退出</string>
+
     <string name="app_update">应用更新</string>
     <string name="current_version">当前版本：%1$s</string>
     <string name="update_auto_check_summary">点击按钮检查更新</string>
@@ -68,6 +72,8 @@
     <string name="update_download_ready">更新已下载，点击安装</string>
 
     <string name="about">关于</string>
+    <string name="developer_donation">大侠阿木</string>
+    <string name="developer_donation_summary">点击捐赠，支持他的开发工作。</string>
     <string name="developer_blog">大侠阿木博客</string>
     <string name="developer_blog_summary">访问大侠阿木的个人博客</string>
     <string name="developer_github">大侠阿木 GitHub</string>

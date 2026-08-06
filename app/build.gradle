@@ -4,6 +4,10 @@ apply plugin: 'org.jetbrains.kotlin.plugin.compose'
 def releaseKeystorePropertiesFile = rootProject.file('.signing/keystore.properties')
 def releaseKeystoreProperties = new Properties()
 def burnInShiftIntervalMs = project.findProperty('burnInShiftIntervalMs')?.toLong() ?: 180000L
+def hardeningBuildId = project.findProperty('hardeningBuildId') ?: 'development'
+def integrityWatchdogMs = project.findProperty('integrityWatchdogMs')?.toLong() ?: 15000L
+def expectedCertSha256 = project.findProperty('expectedCertSha256') ?:
+        'A3278D7A7A11754FE8D8042A0E2666CAEF60505DBD97DB7A1127B88BB622C7F9'
 def releaseSigningEnabled = releaseKeystorePropertiesFile.exists() &&
         !project.hasProperty('unsignedRelease')
 if (releaseKeystorePropertiesFile.exists()) {
@@ -33,9 +37,11 @@ android {
         applicationId 'com.daxiaamu.mijiapanel'
         minSdk 26
         targetSdk 35
-        versionCode project.findProperty('versionCodeOverride')?.toInteger() ?: 8
-        versionName project.findProperty('versionNameOverride') ?: '1.1.0-pre'
+        versionCode project.findProperty('versionCodeOverride')?.toInteger() ?: 30
+        versionName project.findProperty('versionNameOverride') ?: '1.2.0'
         buildConfigField 'long', 'BURN_IN_SHIFT_INTERVAL_MS', "${burnInShiftIntervalMs}L"
+        buildConfigField 'String', 'HARDENING_BUILD_ID', "\"${hardeningBuildId}\""
+        buildConfigField 'long', 'INTEGRITY_WATCHDOG_MS', "${integrityWatchdogMs}L"
     }
 
     signingConfigs {
@@ -62,9 +68,16 @@ android {
     }
 
     buildTypes {
+        debug {
+            buildConfigField 'boolean', 'ENFORCE_INTEGRITY', 'false'
+            buildConfigField 'String', 'EXPECTED_CERT_SHA256', '\"\"'
+        }
         release {
             minifyEnabled true
             shrinkResources true
+            buildConfigField 'boolean', 'ENFORCE_INTEGRITY', 'true'
+            buildConfigField 'String', 'EXPECTED_CERT_SHA256',
+                    "\"${expectedCertSha256}\""
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             if (releaseSigningEnabled) {
                 signingConfig signingConfigs.release
@@ -92,6 +105,5 @@ dependencies {
     implementation 'androidx.camera:camera-lifecycle:1.6.1'
     implementation 'androidx.lifecycle:lifecycle-service:2.9.4'
     implementation 'com.google.mlkit:face-detection:16.1.7'
-    implementation 'com.google.mlkit:pose-detection:18.0.0-beta5'
     debugImplementation 'androidx.compose.ui:ui-tooling'
 }

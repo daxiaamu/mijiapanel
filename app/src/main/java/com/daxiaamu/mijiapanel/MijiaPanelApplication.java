@@ -1,18 +1,23 @@
 package com.daxiaamu.mijiapanel;
 
 import android.app.Application;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 
 import java.util.Collections;
 import java.util.Set;
 import java.util.WeakHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 
 import io.github.libxposed.service.XposedService;
 import io.github.libxposed.service.XposedServiceHelper;
 
 public final class MijiaPanelApplication extends Application {
+    private static final String TAG = "MijiaPanelIntegrity";
+
     interface ServiceListener {
         void onServiceAvailable();
     }
@@ -26,11 +31,37 @@ public final class MijiaPanelApplication extends Application {
     private final Set<ServiceListener> listeners =
             Collections.newSetFromMap(new WeakHashMap<>());
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable integrityWatchdog = new Runnable() {
+        @Override
+        public void run() {
+            if (!integrityTrusted) {
+                return;
+            }
+            if (!AppIntegrity.verify(MijiaPanelApplication.this)) {
+                integrityTrusted = false;
+                xposedService = null;
+                stopService(new Intent(
+                        MijiaPanelApplication.this,
+                        PresenceDetectionService.class));
+                Log.e(TAG, "Runtime integrity capability was revoked");
+                return;
+            }
+            scheduleIntegrityWatchdog();
+        }
+    };
     private volatile XposedService xposedService;
+    private volatile boolean integrityTrusted;
 
     @Override
     public void onCreate() {
         super.onCreate();
+        integrityTrusted = AppIntegrity.verify(this);
+        if (!integrityTrusted) {
+            Log.e(TAG, "Application startup rejected by integrity policy");
+            return;
+        }
+        Log.i(TAG, "Integrity capability issued for " + BuildConfig.HARDENING_BUILD_ID);
+        scheduleIntegrityWatchdog();
         XposedServiceHelper.registerListener(new XposedServiceHelper.OnServiceListener() {
             @Override
             public void onServiceBind(XposedService service) {
@@ -50,6 +81,10 @@ public final class MijiaPanelApplication extends Application {
     SharedPreferences getRemotePreferences(String group) {
         XposedService service = xposedService;
         return service == null ? null : service.getRemotePreferences(group);
+    }
+
+    boolean isIntegrityTrusted() {
+        return integrityTrusted;
     }
 
     boolean isScopeEnabled(String packageName) {
@@ -105,5 +140,11 @@ public final class MijiaPanelApplication extends Application {
         for (ServiceListener listener : snapshot) {
             listener.onServiceAvailable();
         }
+    }
+
+    private void scheduleIntegrityWatchdog() {
+        long base = Math.max(700L, BuildConfig.INTEGRITY_WATCHDOG_MS);
+        long jitter = ThreadLocalRandom.current().nextLong(Math.max(1L, base / 3L));
+        mainHandler.postDelayed(integrityWatchdog, base + jitter);
     }
 }
