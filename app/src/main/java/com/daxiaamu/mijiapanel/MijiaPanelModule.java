@@ -86,7 +86,10 @@ public final class MijiaPanelModule extends XposedModule {
     private static final String CACHE_VERSION_CODE = "dexkit_version_code";
     private static final String CACHE_UPDATE_TIME = "dexkit_update_time";
     private static final String CACHE_PAD_METHOD = "dexkit_pad_method";
+    private static final String CACHE_PAD_AUX_METHOD = "dexkit_pad_aux_method";
     private static final String PAD_PACKAGE_PREFIX = "com.xiaomi.smarthome.pad.";
+    private static final String HOUSE_3D_ACTIVITY =
+            "com.xiaomi.smarthome.House3dActivity";
     private static final int TARGET_SHORTEST_DP = 600;
     private static final int MIN_DENSITY_DPI = 240;
     private static final long PANEL_PAUSE_STATE_DELAY_MS = 500L;
@@ -101,6 +104,7 @@ public final class MijiaPanelModule extends XposedModule {
     private volatile CompatibilityProfile compatibilityProfile = CompatibilityProfile.UNKNOWN;
     private volatile SharedPreferences brightnessPreferences;
     private volatile WeakReference<Activity> activePadActivity = new WeakReference<>(null);
+    private volatile WeakReference<Activity> tabletScopedActivity = new WeakReference<>(null);
     private volatile WeakReference<PowerManager.WakeLock> padWakeLock =
             new WeakReference<>(null);
     private final Object burnInControllerLock = new Object();
@@ -673,6 +677,10 @@ public final class MijiaPanelModule extends XposedModule {
                                     "Xiaomi Home hooks rejected by integrity policy");
                             return chain.proceed();
                         }
+                        if (!isMainProcess()) {
+                            log(Log.INFO, TAG, "Skipping Xiaomi Home hooks outside main process");
+                            return chain.proceed();
+                        }
                         targetContext = base;
                         registerPanelLifecycleCallbacks((Application) chain.getThisObject());
                         if (targetHooksInstalled.compareAndSet(false, true)) {
@@ -711,6 +719,7 @@ public final class MijiaPanelModule extends XposedModule {
 
                         @Override
                         public void onActivityResumed(Activity activity) {
+                            updateTabletScope(activity);
                             if (isPadActivity(activity)) {
                                 activePadActivity = new WeakReference<>(activity);
                                 publishPanelActive(activity, true);
@@ -750,6 +759,9 @@ public final class MijiaPanelModule extends XposedModule {
 
                         @Override
                         public void onActivityDestroyed(Activity activity) {
+                            if (tabletScopedActivity.get() == activity) {
+                                tabletScopedActivity = new WeakReference<>(null);
+                            }
                             if (isPadActivity(activity)) {
                                 publishPanelActive(activity, false);
                                 stopBurnInProtection(activity);
@@ -764,6 +776,34 @@ public final class MijiaPanelModule extends XposedModule {
 
     private static boolean isPadActivity(Activity activity) {
         return activity != null && PAD_MAIN.equals(activity.getClass().getName());
+    }
+
+    private static boolean isTabletContextActivity(Activity activity) {
+        return activity != null
+                && activity.getClass().getName().startsWith(PAD_PACKAGE_PREFIX);
+    }
+
+    private static boolean isTabletScopedActivity(Activity activity) {
+        if (activity == null) {
+            return false;
+        }
+        String className = activity.getClass().getName();
+        return className.startsWith(PAD_PACKAGE_PREFIX)
+                || HOUSE_3D_ACTIVITY.equals(className);
+    }
+
+    private void updateTabletScope(Activity activity) {
+        tabletScopedActivity = isTabletScopedActivity(activity)
+                ? new WeakReference<>(activity)
+                : new WeakReference<>(null);
+    }
+
+    private boolean shouldReportTablet() {
+        Activity activity = tabletScopedActivity.get();
+        return isPadModeEnabled(targetContext)
+                && isTabletScopedActivity(activity)
+                && !activity.isFinishing()
+                && !activity.isDestroyed();
     }
 
     private void registerDebugReceiver(Context context) {
@@ -812,9 +852,11 @@ public final class MijiaPanelModule extends XposedModule {
                     .setPriority(XposedInterface.PRIORITY_HIGHEST)
                     .intercept(chain -> {
                         Context base = (Context) chain.getArg(0);
-                        Object activity = chain.getThisObject();
-                        boolean isPadActivity = activity != null
-                                && activity.getClass().getName().startsWith(PAD_PACKAGE_PREFIX);
+                        Object activityObject = chain.getThisObject();
+                        Activity activity = activityObject instanceof Activity
+                                ? (Activity) activityObject : null;
+                        updateTabletScope(activity);
+                        boolean isPadActivity = isTabletContextActivity(activity);
                         Context effectiveContext = isPadActivity && isPadModeEnabled(base)
                                 ? makeTabletContext(base)
                                 : base;
@@ -851,11 +893,13 @@ public final class MijiaPanelModule extends XposedModule {
                 profile.coreClass,
                 profile.coreMethod,
                 "mijia-panel.is-pad-core");
-        hookBooleanTrue(
-                loader,
-                profile.utilityClass,
-                profile.utilityMethod,
-                "mijia-panel.is-pad-activity");
+        if (profile.utilityMethod != null) {
+            hookBooleanTrue(
+                    loader,
+                    profile.utilityClass,
+                    profile.utilityMethod,
+                    "mijia-panel.is-pad-activity");
+        }
         if (!coreHooked) {
             hookDiscoveredTabletCheck(loader, context, versionCode);
         }
@@ -884,7 +928,7 @@ public final class MijiaPanelModule extends XposedModule {
         hook(method)
                 .setId(hookId)
                 .setPriority(XposedInterface.PRIORITY_HIGHEST)
-                .intercept(chain -> isPadModeEnabled(targetContext)
+                .intercept(chain -> shouldReportTablet()
                         ? true
                         : chain.proceed());
     }
@@ -893,65 +937,139 @@ public final class MijiaPanelModule extends XposedModule {
             ClassLoader loader, Context context, long versionCode) {
         try {
             long updateTime = getTargetUpdateTime(context);
-            Method cached = readCachedPadMethod(loader, versionCode, updateTime);
-            if (cached != null) {
-                hookBooleanTrue(cached, "mijia-panel.is-pad-dexkit");
-                log(Log.INFO, TAG, "Using cached tablet check " + cached);
+            Method cachedCore = readCachedPadMethod(
+                    loader, versionCode, updateTime, CACHE_PAD_METHOD);
+            Method cachedAuxiliary = readCachedPadMethod(
+                    loader, versionCode, updateTime, CACHE_PAD_AUX_METHOD);
+            if (cachedCore != null && cachedAuxiliary != null) {
+                hookBooleanTrue(cachedCore, "mijia-panel.is-pad-dexkit");
+                hookBooleanTrue(cachedAuxiliary, "mijia-panel.is-pad-aux-dexkit");
+                log(Log.INFO, TAG, "Using cached tablet checks "
+                        + cachedCore + " and " + cachedAuxiliary);
                 return;
             }
 
             System.loadLibrary("dexkit");
             String sourceDir = context.getApplicationInfo().sourceDir;
             try (DexKitBridge bridge = DexKitBridge.create(sourceDir)) {
-                MethodMatcher matcher = MethodMatcher.create()
-                        .modifiers(Modifier.STATIC)
-                        .returnType("boolean")
-                        .paramCount(0)
-                        .usingEqStrings("developer_setting", "force_not_pad")
-                        .usingNumbers(530.0f, 1.8f);
-                MethodDataList matches = bridge.findMethod(
-                        FindMethod.create()
-                                .searchPackages("_m_j")
-                                .matcher(matcher));
-                if (matches.isEmpty()) {
-                    // Keep the semantic strings and signature as the required
-                    // identity, but tolerate future package or threshold changes.
-                    matches = bridge.findMethod(
-                            FindMethod.create()
-                                    .matcher(MethodMatcher.create()
-                                            .modifiers(Modifier.STATIC)
-                                            .returnType("boolean")
-                                            .paramCount(0)
-                                            .usingEqStrings(
-                                                    "developer_setting",
-                                                    "force_not_pad")));
-                }
-                if (matches.size() != 1) {
-                    log(Log.WARN, TAG, "DEX tablet-check search returned "
-                            + matches.size() + " candidates; refusing an ambiguous hook");
+                MethodData coreMatch = cachedCore == null
+                        ? findCoreTabletCheck(bridge)
+                        : bridge.getMethodData(cachedCore);
+                if (coreMatch == null) {
                     return;
                 }
 
-                MethodData match = matches.get(0);
-                Method method = match.getMethodInstance(loader);
-                hookBooleanTrue(method, "mijia-panel.is-pad-dexkit");
-                cachePadMethod(match.getDescriptor(), versionCode, updateTime);
-                log(Log.INFO, TAG, "Discovered tablet check " + match.getDescriptor());
+                MethodData auxiliaryMatch = findAuxiliaryTabletCheck(coreMatch);
+                Method coreMethod = cachedCore == null
+                        ? coreMatch.getMethodInstance(loader) : cachedCore;
+                hookBooleanTrue(coreMethod, "mijia-panel.is-pad-dexkit");
+
+                String auxiliaryDescriptor = null;
+                if (auxiliaryMatch != null
+                        && !coreMatch.getDescriptor().equals(auxiliaryMatch.getDescriptor())) {
+                    Method auxiliaryMethod = cachedAuxiliary == null
+                            ? auxiliaryMatch.getMethodInstance(loader) : cachedAuxiliary;
+                    hookBooleanTrue(auxiliaryMethod, "mijia-panel.is-pad-aux-dexkit");
+                    auxiliaryDescriptor = auxiliaryMatch.getDescriptor();
+                    log(Log.INFO, TAG, "Discovered auxiliary tablet check "
+                            + auxiliaryDescriptor);
+                }
+                cachePadMethods(
+                        coreMatch.getDescriptor(), auxiliaryDescriptor, versionCode, updateTime);
+                log(Log.INFO, TAG, "Discovered core tablet check "
+                        + coreMatch.getDescriptor());
             }
         } catch (Throwable error) {
-            logFailure("Unable to discover the tablet check", error);
+            logFailure("Unable to discover the tablet checks", error);
         }
     }
 
+    private MethodData findCoreTabletCheck(DexKitBridge bridge) {
+        MethodMatcher matcher = MethodMatcher.create()
+                .modifiers(Modifier.STATIC)
+                .returnType("boolean")
+                .paramCount(0)
+                .usingEqStrings("developer_setting", "force_not_pad")
+                .usingNumbers(530.0f, 1.8f);
+        MethodDataList matches = bridge.findMethod(
+                FindMethod.create()
+                        .searchPackages("_m_j")
+                        .matcher(matcher));
+        if (matches.isEmpty()) {
+            // Keep the semantic strings and signature as the required identity,
+            // but tolerate future package or threshold changes.
+            matches = bridge.findMethod(
+                    FindMethod.create()
+                            .matcher(MethodMatcher.create()
+                                    .modifiers(Modifier.STATIC)
+                                    .returnType("boolean")
+                                    .paramCount(0)
+                                    .usingEqStrings(
+                                            "developer_setting",
+                                            "force_not_pad")));
+        }
+        if (matches.size() != 1) {
+            log(Log.WARN, TAG, "DEX core tablet-check search returned "
+                    + matches.size() + " candidates; refusing an ambiguous hook");
+            return null;
+        }
+        return matches.get(0);
+    }
+
+    private MethodData findAuxiliaryTabletCheck(MethodData coreMatch) {
+        ArrayList<MethodData> candidates = new ArrayList<>();
+        for (MethodData caller : coreMatch.getCallers()) {
+            if (!caller.getDeclaredClassName().startsWith("com.xiaomi.smarthome.utils.")
+                    || !isStaticBooleanNoArgs(caller)) {
+                continue;
+            }
+            boolean invokesCore = false;
+            ArrayList<MethodData> otherBooleanInvokes = new ArrayList<>();
+            for (MethodData invoked : caller.getInvokes()) {
+                if (coreMatch.getDescriptor().equals(invoked.getDescriptor())) {
+                    invokesCore = true;
+                } else if (invoked.getDeclaredClassName().startsWith("_m_j.")
+                        && isStaticBooleanNoArgs(invoked)) {
+                    otherBooleanInvokes.add(invoked);
+                }
+            }
+            if (invokesCore && otherBooleanInvokes.size() == 1) {
+                MethodData candidate = otherBooleanInvokes.get(0);
+                boolean duplicate = false;
+                for (MethodData existing : candidates) {
+                    if (existing.getDescriptor().equals(candidate.getDescriptor())) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) {
+                    candidates.add(candidate);
+                }
+            }
+        }
+        if (candidates.size() != 1) {
+            log(Log.WARN, TAG, "DEX auxiliary tablet-check search returned "
+                    + candidates.size() + " candidates; keeping the core hook only");
+            return null;
+        }
+        return candidates.get(0);
+    }
+
+    private static boolean isStaticBooleanNoArgs(MethodData method) {
+        return Modifier.isStatic(method.getModifiers())
+                && "boolean".equals(method.getReturnTypeName())
+                && method.getParamCount() == 0;
+    }
+
     private Method readCachedPadMethod(
-            ClassLoader loader, long versionCode, long updateTime) {
+            ClassLoader loader, long versionCode, long updateTime, String cacheKey) {
         try {
             SharedPreferences preferences = getRemotePreferences(COMPAT_PREFS);
             if (preferences.getLong(CACHE_VERSION_CODE, -1) != versionCode
                     || preferences.getLong(CACHE_UPDATE_TIME, -1) != updateTime) {
                 return null;
             }
-            String descriptor = preferences.getString(CACHE_PAD_METHOD, null);
+            String descriptor = preferences.getString(cacheKey, null);
             if (descriptor == null || descriptor.isEmpty()) {
                 return null;
             }
@@ -968,14 +1086,23 @@ public final class MijiaPanelModule extends XposedModule {
         }
     }
 
-    private void cachePadMethod(String descriptor, long versionCode, long updateTime) {
+    private void cachePadMethods(
+            String coreDescriptor,
+            String auxiliaryDescriptor,
+            long versionCode,
+            long updateTime) {
         try {
-            getRemotePreferences(COMPAT_PREFS)
+            SharedPreferences.Editor editor = getRemotePreferences(COMPAT_PREFS)
                     .edit()
                     .putLong(CACHE_VERSION_CODE, versionCode)
                     .putLong(CACHE_UPDATE_TIME, updateTime)
-                    .putString(CACHE_PAD_METHOD, descriptor)
-                    .apply();
+                    .putString(CACHE_PAD_METHOD, coreDescriptor);
+            if (auxiliaryDescriptor == null || auxiliaryDescriptor.isEmpty()) {
+                editor.remove(CACHE_PAD_AUX_METHOD);
+            } else {
+                editor.putString(CACHE_PAD_AUX_METHOD, auxiliaryDescriptor);
+            }
+            editor.apply();
         } catch (Throwable error) {
             logFailure("Unable to save the DEX compatibility cache", error);
         }
@@ -1936,7 +2063,13 @@ public final class MijiaPanelModule extends XposedModule {
                         "_m_j.n84", "OooOOoo", "OooOoOO", true),
                 new CompatibilityProfile(
                         110617051L, "11.6.705", "dec",
-                        "_m_j.yz8", "OooOooo", "OooOOO0", true)
+                        "_m_j.yz8", "OooOooo", "OooOOO0", true),
+                new CompatibilityProfile(
+                        110716231L, "11.7.623", "dfo",
+                        "_m_j.aja", "OooooOo", "OooOooO", true),
+                new CompatibilityProfile(
+                        110717051L, "11.7.705", "dfo",
+                        "_m_j.mja", "OooooOO", "OooOooO", true)
         };
 
         private final long versionCode;
@@ -1961,7 +2094,9 @@ public final class MijiaPanelModule extends XposedModule {
             this.entryId = entryId;
             this.coreClass = coreClass;
             this.coreMethod = coreMethod;
-            this.utilityClass = UTILITY_CLASS;
+            this.utilityClass = versionCode == 110716231L ? "_m_j.fq"
+                    : versionCode == 110717051L ? "_m_j.eq"
+                    : UTILITY_CLASS;
             this.utilityMethod = utilityMethod;
             this.known = known;
         }
