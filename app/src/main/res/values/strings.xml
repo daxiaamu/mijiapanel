@@ -80,6 +80,8 @@
     <string name="developer_github_summary">查看大侠阿木的 GitHub 主页</string>
     <string name="view_source_code">查看源代码</string>
     <string name="view_source_code_summary">在 GitHub 上查看 MijiaPanel 源代码</string>
+    <string name="mijia_apk_download">米家版本下载</string>
+    <string name="mijia_apk_download_summary">下载已适配的米家 APP 安装包</string>
     <string name="open_source_licenses">开放源代码许可</string>
     <string name="open_source_licenses_summary">查看本应用及所使用组件的许可与条款</string>
     <string name="open_source_role_app">本应用</string>

@@ -111,6 +111,7 @@ class SettingsActivity : ComponentActivity() {
         const val BLOG_URL = "https://www.daxiaamu.com"
         const val GITHUB_PROFILE_URL = "https://github.com/daxiaamu"
         const val REPOSITORY_URL = "https://github.com/daxiaamu/mijiapanel"
+        const val MIJIA_APK_DOWNLOAD_URL = "https://pan.quark.cn/s/b331f616f77f"
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -687,6 +688,15 @@ class SettingsActivity : ComponentActivity() {
                         subtitle = getString(R.string.view_source_code_summary),
                         external = true,
                         onClick = { openUrl(REPOSITORY_URL) },
+                    )
+                }
+                item {
+                    AboutSetting(
+                        icon = Icons.Default.SystemUpdate,
+                        title = getString(R.string.mijia_apk_download),
+                        subtitle = getString(R.string.mijia_apk_download_summary),
+                        external = true,
+                        onClick = { openUrl(MIJIA_APK_DOWNLOAD_URL) },
                     )
                 }
                 item {

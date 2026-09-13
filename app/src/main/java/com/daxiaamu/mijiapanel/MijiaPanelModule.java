@@ -33,6 +33,7 @@ import android.widget.TextView;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.ref.WeakReference;
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -882,7 +883,8 @@ public final class MijiaPanelModule extends XposedModule {
         if (!profile.known) {
             log(Log.WARN, TAG, "Unknown Xiaomi Home versionCode " + versionCode
                     + "; searching for the tablet check by DEX structure");
-            hookDiscoveredTabletCheck(loader, context, versionCode);
+            hookDiscoveredTabletCheck(
+                    loader, context, versionCode, false, false);
             return;
         }
 
@@ -893,15 +895,17 @@ public final class MijiaPanelModule extends XposedModule {
                 profile.coreClass,
                 profile.coreMethod,
                 "mijia-panel.is-pad-core");
+        boolean auxiliaryHooked = true;
         if (profile.utilityMethod != null) {
-            hookBooleanTrue(
+            auxiliaryHooked = hookBooleanTrue(
                     loader,
                     profile.utilityClass,
                     profile.utilityMethod,
                     "mijia-panel.is-pad-activity");
         }
-        if (!coreHooked) {
-            hookDiscoveredTabletCheck(loader, context, versionCode);
+        if (!coreHooked || !auxiliaryHooked) {
+            hookDiscoveredTabletCheck(
+                    loader, context, versionCode, coreHooked, auxiliaryHooked);
         }
     }
 
@@ -934,7 +938,8 @@ public final class MijiaPanelModule extends XposedModule {
     }
 
     private void hookDiscoveredTabletCheck(
-            ClassLoader loader, Context context, long versionCode) {
+            ClassLoader loader, Context context, long versionCode,
+            boolean coreAlreadyHooked, boolean auxiliaryAlreadyHooked) {
         try {
             long updateTime = getTargetUpdateTime(context);
             Method cachedCore = readCachedPadMethod(
@@ -942,14 +947,18 @@ public final class MijiaPanelModule extends XposedModule {
             Method cachedAuxiliary = readCachedPadMethod(
                     loader, versionCode, updateTime, CACHE_PAD_AUX_METHOD);
             if (cachedCore != null && cachedAuxiliary != null) {
-                hookBooleanTrue(cachedCore, "mijia-panel.is-pad-dexkit");
-                hookBooleanTrue(cachedAuxiliary, "mijia-panel.is-pad-aux-dexkit");
+                if (!coreAlreadyHooked) {
+                    hookBooleanTrue(cachedCore, "mijia-panel.is-pad-dexkit");
+                }
+                if (!auxiliaryAlreadyHooked) {
+                    hookBooleanTrue(cachedAuxiliary, "mijia-panel.is-pad-aux-dexkit");
+                }
                 log(Log.INFO, TAG, "Using cached tablet checks "
                         + cachedCore + " and " + cachedAuxiliary);
                 return;
             }
 
-            System.loadLibrary("dexkit");
+            loadDexKitNativeLibrary(context);
             String sourceDir = context.getApplicationInfo().sourceDir;
             try (DexKitBridge bridge = DexKitBridge.create(sourceDir)) {
                 MethodData coreMatch = cachedCore == null
@@ -962,15 +971,20 @@ public final class MijiaPanelModule extends XposedModule {
                 MethodData auxiliaryMatch = findAuxiliaryTabletCheck(coreMatch);
                 Method coreMethod = cachedCore == null
                         ? coreMatch.getMethodInstance(loader) : cachedCore;
-                hookBooleanTrue(coreMethod, "mijia-panel.is-pad-dexkit");
+                if (!coreAlreadyHooked) {
+                    hookBooleanTrue(coreMethod, "mijia-panel.is-pad-dexkit");
+                }
 
                 String auxiliaryDescriptor = null;
                 if (auxiliaryMatch != null
                         && !coreMatch.getDescriptor().equals(auxiliaryMatch.getDescriptor())) {
-                    Method auxiliaryMethod = cachedAuxiliary == null
-                            ? auxiliaryMatch.getMethodInstance(loader) : cachedAuxiliary;
-                    hookBooleanTrue(auxiliaryMethod, "mijia-panel.is-pad-aux-dexkit");
                     auxiliaryDescriptor = auxiliaryMatch.getDescriptor();
+                    if (!auxiliaryAlreadyHooked) {
+                        Method auxiliaryMethod = cachedAuxiliary == null
+                                ? auxiliaryMatch.getMethodInstance(loader) : cachedAuxiliary;
+                        hookBooleanTrue(
+                                auxiliaryMethod, "mijia-panel.is-pad-aux-dexkit");
+                    }
                     log(Log.INFO, TAG, "Discovered auxiliary tablet check "
                             + auxiliaryDescriptor);
                 }
@@ -981,6 +995,35 @@ public final class MijiaPanelModule extends XposedModule {
             }
         } catch (Throwable error) {
             logFailure("Unable to discover the tablet checks", error);
+        }
+    }
+
+    private void loadDexKitNativeLibrary(Context context) {
+        UnsatisfiedLinkError loadLibraryError;
+        try {
+            System.loadLibrary("dexkit");
+            return;
+        } catch (UnsatisfiedLinkError error) {
+            loadLibraryError = error;
+        }
+
+        try {
+            String nativeLibraryDir = getModuleApplicationInfo().nativeLibraryDir;
+            if ((nativeLibraryDir == null || nativeLibraryDir.isEmpty())
+                    && context != null) {
+                nativeLibraryDir = context.getPackageManager()
+                        .getApplicationInfo(MODULE_PACKAGE, 0)
+                        .nativeLibraryDir;
+            }
+            if (nativeLibraryDir == null || nativeLibraryDir.isEmpty()) {
+                throw new UnsatisfiedLinkError("Module native library directory is unavailable");
+            }
+            File library = new File(nativeLibraryDir, System.mapLibraryName("dexkit"));
+            System.load(library.getAbsolutePath());
+            log(Log.INFO, TAG, "Loaded DexKit from " + library);
+        } catch (Throwable absoluteLoadError) {
+            loadLibraryError.addSuppressed(absoluteLoadError);
+            throw loadLibraryError;
         }
     }
 
@@ -1017,10 +1060,28 @@ public final class MijiaPanelModule extends XposedModule {
     }
 
     private MethodData findAuxiliaryTabletCheck(MethodData coreMatch) {
+        ArrayList<MethodData> candidates = findAuxiliaryTabletChecks(
+                coreMatch, true);
+        if (candidates.isEmpty()) {
+            candidates = findAuxiliaryTabletChecks(coreMatch, false);
+        }
+        if (candidates.size() != 1) {
+            log(Log.WARN, TAG, "DEX auxiliary tablet-check search returned "
+                    + candidates.size() + " candidates; keeping the core hook only");
+            return null;
+        }
+        return candidates.get(0);
+    }
+
+    private ArrayList<MethodData> findAuxiliaryTabletChecks(
+            MethodData coreMatch, boolean requireUtilityPackage) {
         ArrayList<MethodData> candidates = new ArrayList<>();
         for (MethodData caller : coreMatch.getCallers()) {
-            if (!caller.getDeclaredClassName().startsWith("com.xiaomi.smarthome.utils.")
-                    || !isStaticBooleanNoArgs(caller)) {
+            String callerClass = caller.getDeclaredClassName();
+            if (!isStaticBooleanNoArgs(caller)
+                    || (requireUtilityPackage
+                    ? !callerClass.startsWith("com.xiaomi.smarthome.utils.")
+                    : !callerClass.startsWith("com.xiaomi.smarthome."))) {
                 continue;
             }
             boolean invokesCore = false;
@@ -1047,12 +1108,7 @@ public final class MijiaPanelModule extends XposedModule {
                 }
             }
         }
-        if (candidates.size() != 1) {
-            log(Log.WARN, TAG, "DEX auxiliary tablet-check search returned "
-                    + candidates.size() + " candidates; keeping the core hook only");
-            return null;
-        }
-        return candidates.get(0);
+        return candidates;
     }
 
     private static boolean isStaticBooleanNoArgs(MethodData method) {
@@ -2069,7 +2125,10 @@ public final class MijiaPanelModule extends XposedModule {
                         "_m_j.aja", "OooooOo", "OooOooO", true),
                 new CompatibilityProfile(
                         110717051L, "11.7.705", "dfo",
-                        "_m_j.mja", "OooooOO", "OooOooO", true)
+                        "_m_j.mja", "OooooOO", "OooOooO", true),
+                new CompatibilityProfile(
+                        110816051L, "11.8.605", "dcy",
+                        "_m_j.lo1", "o00Oo0", "OoooOO0", true)
         };
 
         private final long versionCode;
@@ -2096,6 +2155,7 @@ public final class MijiaPanelModule extends XposedModule {
             this.coreMethod = coreMethod;
             this.utilityClass = versionCode == 110716231L ? "_m_j.fq"
                     : versionCode == 110717051L ? "_m_j.eq"
+                    : versionCode == 110816051L ? "_m_j.pt9"
                     : UTILITY_CLASS;
             this.utilityMethod = utilityMethod;
             this.known = known;
