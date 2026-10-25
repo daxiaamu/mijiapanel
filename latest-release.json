@@ -3,7 +3,7 @@
   "versionName": "1.2.2",
   "tag": "32-1.2.2",
   "title": "1.2.2",
-  "notes": "## 更新\n\n- 修复新版米家退出中控模式时确认弹层不可见的问题。\n- 新增适配米家 11.8.605，并增强已知及未知版本的自动兼容回退。",
+  "notes": "## 更新\n\n- 修复新版米家退出中控模式时确认弹层不可见的问题。\n- 新增适配米家 11.8.605，并增强已知及未知版本的自动兼容回退。\n\n[Android 开心版软件下载](https://pan.quark.cn/s/14e8a6044f77)",
   "releaseUrl": "https://github.com/daxiaamu/mijiapanel/releases/tag/32-1.2.2",
   "apkUrls": [
     "https://gh-proxy.com/https://github.com/daxiaamu/mijiapanel/releases/download/32-1.2.2/MijiaPanel-1.2.2-universal.apk",
