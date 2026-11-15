@@ -1065,6 +1065,14 @@ public final class MijiaPanelModule extends XposedModule {
         if (candidates.isEmpty()) {
             candidates = findAuxiliaryTabletChecks(coreMatch, false);
         }
+        if (candidates.isEmpty()) {
+            candidates = findCrossReferencedAuxiliaryTabletChecks(
+                    coreMatch, true);
+        }
+        if (candidates.isEmpty()) {
+            candidates = findCrossReferencedAuxiliaryTabletChecks(
+                    coreMatch, false);
+        }
         if (candidates.size() != 1) {
             log(Log.WARN, TAG, "DEX auxiliary tablet-check search returned "
                     + candidates.size() + " candidates; keeping the core hook only");
@@ -1109,6 +1117,74 @@ public final class MijiaPanelModule extends XposedModule {
             }
         }
         return candidates;
+    }
+
+    /**
+     * Newer Xiaomi Home builds route the core size check through a boolean helper
+     * that accepts an Activity, so it no longer matches the original no-argument
+     * caller shape. The real device-type flag is also used by a separate
+     * no-argument helper in the same ActivityUtils class. Requiring that second
+     * reference keeps this fallback structural without accepting every boolean
+     * invoked beside the core check.
+     */
+    private ArrayList<MethodData> findCrossReferencedAuxiliaryTabletChecks(
+            MethodData coreMatch, boolean requireUtilityPackage) {
+        ArrayList<MethodData> candidates = new ArrayList<>();
+        for (MethodData caller : coreMatch.getCallers()) {
+            String callerClass = caller.getDeclaredClassName();
+            if (!Modifier.isStatic(caller.getModifiers())
+                    || !"boolean".equals(caller.getReturnTypeName())
+                    || (requireUtilityPackage
+                    ? !callerClass.startsWith("com.xiaomi.smarthome.utils.")
+                    : !callerClass.startsWith("com.xiaomi.smarthome."))) {
+                continue;
+            }
+
+            boolean invokesCore = false;
+            ArrayList<MethodData> possibleFlags = new ArrayList<>();
+            for (MethodData invoked : caller.getInvokes()) {
+                if (coreMatch.getDescriptor().equals(invoked.getDescriptor())) {
+                    invokesCore = true;
+                } else if (invoked.getDeclaredClassName().startsWith("_m_j.")
+                        && isStaticBooleanNoArgs(invoked)) {
+                    possibleFlags.add(invoked);
+                }
+            }
+            if (!invokesCore) {
+                continue;
+            }
+
+            for (MethodData possibleFlag : possibleFlags) {
+                if (!hasNoArgBooleanCallerInClass(
+                        possibleFlag, callerClass, caller.getDescriptor())) {
+                    continue;
+                }
+                addUniqueMethod(candidates, possibleFlag);
+            }
+        }
+        return candidates;
+    }
+
+    private static boolean hasNoArgBooleanCallerInClass(
+            MethodData method, String className, String excludedDescriptor) {
+        for (MethodData caller : method.getCallers()) {
+            if (className.equals(caller.getDeclaredClassName())
+                    && !excludedDescriptor.equals(caller.getDescriptor())
+                    && isStaticBooleanNoArgs(caller)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void addUniqueMethod(
+            ArrayList<MethodData> methods, MethodData candidate) {
+        for (MethodData existing : methods) {
+            if (existing.getDescriptor().equals(candidate.getDescriptor())) {
+                return;
+            }
+        }
+        methods.add(candidate);
     }
 
     private static boolean isStaticBooleanNoArgs(MethodData method) {
@@ -2128,7 +2204,10 @@ public final class MijiaPanelModule extends XposedModule {
                         "_m_j.mja", "OooooOO", "OooOooO", true),
                 new CompatibilityProfile(
                         110816051L, "11.8.605", "dcy",
-                        "_m_j.lo1", "o00Oo0", "OoooOO0", true)
+                        "_m_j.lo1", "o00Oo0", "OoooOO0", true),
+                new CompatibilityProfile(
+                        111016011L, "11.10.601", "df8",
+                        "_m_j.u49", "o0OoOo0", "OoooO0O", true)
         };
 
         private final long versionCode;
@@ -2156,6 +2235,7 @@ public final class MijiaPanelModule extends XposedModule {
             this.utilityClass = versionCode == 110716231L ? "_m_j.fq"
                     : versionCode == 110717051L ? "_m_j.eq"
                     : versionCode == 110816051L ? "_m_j.pt9"
+                    : versionCode == 111016011L ? "_m_j.dxf"
                     : UTILITY_CLASS;
             this.utilityMethod = utilityMethod;
             this.known = known;
