@@ -4,6 +4,20 @@
 
 已适配米家 11.5.705、11.6.501、11.6.625、11.6.701、11.6.703、11.6.705、11.7.623、11.7.705、11.8.605、11.10.601。其他版本会尝试自动识别关键 Hook 点，但不保证完全兼容。
 
+## 界面预览
+
+### 模块设置
+
+<p align="center">
+  <img src="docs/screenshots/mijiapanel-settings.png" alt="MijiaPanel 模块设置" width="360">
+</p>
+
+### 米家中控模式
+
+<p align="center">
+  <img src="docs/screenshots/xiaomi-home-control-panel.png" alt="米家中控模式" width="900">
+</p>
+
 功能：
 
 - 保持米家设置中的“全屋中控”入口可见，但不会自动开启或进入中控模式。
