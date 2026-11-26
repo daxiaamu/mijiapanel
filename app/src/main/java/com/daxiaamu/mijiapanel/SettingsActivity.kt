@@ -111,7 +111,7 @@ class SettingsActivity : ComponentActivity() {
         const val BLOG_URL = "https://www.daxiaamu.com"
         const val GITHUB_PROFILE_URL = "https://github.com/daxiaamu"
         const val REPOSITORY_URL = "https://github.com/daxiaamu/mijiapanel"
-        const val MIJIA_APK_DOWNLOAD_URL = "https://pan.quark.cn/s/b331f616f77f"
+        const val MIJIA_APK_DOWNLOAD_URL = "https://pan.quark.cn/s/f6ce5d5bf94d"
     }
 
     private val handler = Handler(Looper.getMainLooper())

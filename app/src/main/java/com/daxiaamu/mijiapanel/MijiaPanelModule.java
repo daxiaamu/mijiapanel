@@ -1272,7 +1272,7 @@ public final class MijiaPanelModule extends XposedModule {
             CompatibilityProfile profile = compatibilityProfile;
             View entry = null;
 
-            if (profile.known) {
+            if (profile.known && profile.entryId != null) {
                 int entryId = context.getResources().getIdentifier(
                         profile.entryId, "id", TARGET_PACKAGE);
                 View exactEntry = entryId != 0 ? root.findViewById(entryId) : null;
@@ -1457,6 +1457,11 @@ public final class MijiaPanelModule extends XposedModule {
         hideSystemBars(activity);
         applyKeepScreenPolicy(activity);
         applyBrightnessSetting(activity);
+        try {
+            PanelClock.install(activity);
+        } catch (RuntimeException error) {
+            logFailure("Unable to display panel clock", error);
+        }
         configureBurnInProtection(activity);
     }
 
@@ -2207,7 +2212,13 @@ public final class MijiaPanelModule extends XposedModule {
                         "_m_j.lo1", "o00Oo0", "OoooOO0", true),
                 new CompatibilityProfile(
                         111016011L, "11.10.601", "df8",
-                        "_m_j.u49", "o0OoOo0", "OoooO0O", true)
+                        "_m_j.u49", "o0OoOo0", "OoooO0O", true),
+                new CompatibilityProfile(
+                        111016231L, "11.10.623", null,
+                        "_m_j.qb8", "OooOoOO", "OooO0o0", true),
+                new CompatibilityProfile(
+                        111017011L, "11.10.701", null,
+                        "_m_j.qb8", "OooOoOO", "OooO0o0", true)
         };
 
         private final long versionCode;
@@ -2236,6 +2247,7 @@ public final class MijiaPanelModule extends XposedModule {
                     : versionCode == 110717051L ? "_m_j.eq"
                     : versionCode == 110816051L ? "_m_j.pt9"
                     : versionCode == 111016011L ? "_m_j.dxf"
+                    : (versionCode == 111016231L || versionCode == 111017011L) ? "_m_j.z8b"
                     : UTILITY_CLASS;
             this.utilityMethod = utilityMethod;
             this.known = known;
